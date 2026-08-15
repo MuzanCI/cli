@@ -238,7 +238,10 @@ impl DebugClient {
     async fn checkout_debugger(&mut self) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
-                DebugClientMessage::CheckoutDebuggerRequest,
+                DebugClientMessage::CheckoutBranchRequest {
+                    url: self.debug_config.remote.url.clone(),
+                    branch: self.debug_config.remote.branch.clone(),
+                },
             ))
             .await?;
 
@@ -247,7 +250,7 @@ impl DebugClient {
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
             .and_then(|response| match response {
-                Message::DebugClient(DebugClientMessage::CheckoutDebuggerResponse { result }) => {
+                Message::DebugClient(DebugClientMessage::CheckoutBranchResponse { result }) => {
                     result.map_err(|e| anyhow::anyhow!(e))
                 }
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
@@ -322,9 +325,7 @@ impl DebugClient {
     #[tracing::instrument(skip_all)]
     async fn debugger_apply_diff(&mut self) -> anyhow::Result<()> {
         self.channel_tx
-            .send(Message::DebugClient(
-                DebugClientMessage::DebuggerApplyDiffRequest,
-            ))
+            .send(Message::DebugClient(DebugClientMessage::ApplyDiffRequest))
             .await?;
 
         self.channel_rx
@@ -332,7 +333,7 @@ impl DebugClient {
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
             .and_then(|response| match response {
-                Message::DebugClient(DebugClientMessage::DebuggerApplyDiffResponse { result }) => {
+                Message::DebugClient(DebugClientMessage::ApplyDiffResponse { result }) => {
                     result.map_err(|e| anyhow::anyhow!(e))
                 }
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
@@ -508,7 +509,7 @@ impl DebugClient {
     async fn debugger_execute_step(&mut self, step: StepConfig) -> anyhow::Result<ExitCode> {
         self.channel_tx
             .send(Message::DebugClient(
-                DebugClientMessage::DebuggerExecuteStepRequest { step: step },
+                DebugClientMessage::ExecuteStepRequest { step: step },
             ))
             .await?;
         self.channel_rx
@@ -516,9 +517,9 @@ impl DebugClient {
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
             .and_then(|response| match response {
-                Message::DebugClient(DebugClientMessage::DebuggerExecuteStepResponse {
-                    result,
-                }) => result.map_err(|e| anyhow::anyhow!(e)),
+                Message::DebugClient(DebugClientMessage::ExecuteStepResponse { result }) => {
+                    result.map_err(|e| anyhow::anyhow!(e))
+                }
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })?;
         Ok(ExitCode::SUCCESS)
@@ -528,7 +529,7 @@ impl DebugClient {
     async fn debugger_ssh_step(&mut self, step: StepConfig) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
-                DebugClientMessage::DebuggerExecuteStepRequest { step: step },
+                DebugClientMessage::ExecuteStepRequest { step: step },
             ))
             .await?;
         self.channel_rx
@@ -536,9 +537,9 @@ impl DebugClient {
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
             .and_then(|response| match response {
-                Message::DebugClient(DebugClientMessage::DebuggerExecuteStepResponse {
-                    result,
-                }) => result.map_err(|e| anyhow::anyhow!(e)),
+                Message::DebugClient(DebugClientMessage::ExecuteStepResponse { result }) => {
+                    result.map_err(|e| anyhow::anyhow!(e))
+                }
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })?;
         Ok(())
