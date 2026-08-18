@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use muzanci_interpreter::collector::Env;
 
 mod debug;
+mod debug_client;
+mod debug_client_tunnel;
 mod error;
 mod logging;
 mod ssh;

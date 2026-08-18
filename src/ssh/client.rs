@@ -1,6 +1,5 @@
 use crossterm::terminal;
 use russh::client::Handle;
-use russh::client::{self};
 use russh::keys::PrivateKeyWithHashAlg;
 use std::io::Write;
 use std::io::stdout;
@@ -9,12 +8,11 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 
-struct ClientHandler;
+pub struct ClientHandler;
 
-impl client::Handler for ClientHandler {
+impl russh::client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    // Skip/Verify server host key checks
     async fn check_server_key(
         &mut self,
         _server_public_key: &russh::keys::PublicKey,
@@ -31,11 +29,11 @@ pub async fn establish_ssh_session<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let config = Arc::new(client::Config::default());
+    let config = Arc::new(russh::client::Config::default());
     let handler = ClientHandler;
 
     // Connect over the custom MPSC transport stream
-    let mut session = client::connect_stream(config, stream, handler).await?;
+    let mut session = russh::client::connect_stream(config, stream, handler).await?;
 
     // Authenticate using public key
     let auth_res = session
