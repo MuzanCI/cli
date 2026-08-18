@@ -9,6 +9,11 @@ use muzanci_transport::message::DebugClientMessage;
 use muzanci_transport::message::DebugConfig;
 use muzanci_transport::message::DebugId;
 use muzanci_transport::message::Message;
+use sha2::Digest;
+use sha2::Sha256;
+use tempfile::NamedTempFile;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::BufReader;
 use tokio_util::sync::CancellationToken;
 
 use muzanci_interpreter::JobConfig;
@@ -125,6 +130,8 @@ pub struct DebugClient {
     channel_tx: ChannelSender,
     channel_rx: ChannelReceiver,
     debug_config: DebugConfig,
+    diff_file: Option<NamedTempFile>,
+    diff_hasher: Option<Sha256>,
 }
 
 impl DebugClient {
@@ -146,6 +153,8 @@ impl DebugClient {
                 channel_tx,
                 channel_rx,
                 debug_config,
+                diff_file: None,
+                diff_hasher: None,
             }
             .run()
             .await
@@ -181,12 +190,13 @@ impl DebugClient {
     async fn main(&mut self) -> anyhow::Result<()> {
         self.create_debug().await?;
         self.connect_debugger().await?;
-        self.checkout_debugger().await?;
+        self.create_sandbox().await?;
+        self.checkout_branch().await?;
         self.create_diff().await?;
         self.start_diff_upload().await?;
         self.send_diff().await?;
         self.complete_diff_upload().await?;
-        self.debugger_apply_diff().await?;
+        self.apply_diff().await?;
         self.debugger_control().await?;
 
         Ok(())
@@ -235,7 +245,27 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn checkout_debugger(&mut self) -> anyhow::Result<()> {
+    async fn create_sandbox(&mut self) -> anyhow::Result<()> {
+        self.channel_tx
+            .send(Message::DebugClient(
+                DebugClientMessage::CreateSandboxRequest,
+            ))
+            .await?;
+
+        self.channel_rx
+            .recv()
+            .await
+            .ok_or(anyhow::anyhow!("Channel closed"))
+            .and_then(|response| match response {
+                Message::DebugClient(DebugClientMessage::CreateSandboxResponse { result }) => {
+                    result.map_err(|e| anyhow::anyhow!(e))
+                }
+                _ => Err(anyhow::anyhow!("Unexpected message type")),
+            })
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn checkout_branch(&mut self) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::CheckoutBranchRequest {
@@ -259,11 +289,22 @@ impl DebugClient {
 
     #[tracing::instrument(skip_all)]
     async fn create_diff(&mut self) -> anyhow::Result<()> {
+        let mut diff_file = tempfile::NamedTempFile::new()?;
+        let git_client = GitClient::try_default()?;
+        let target_dir = PathBuf::from("./.git");
+        git_client.create_diff(
+            &target_dir,
+            self.debug_config.remote.branch.clone(),
+            &mut diff_file,
+        )?;
+        self.diff_file = Some(diff_file);
         Ok(())
     }
 
     #[tracing::instrument(skip_all)]
     async fn start_diff_upload(&mut self) -> anyhow::Result<()> {
+        self.diff_hasher = Some(Sha256::new());
+
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::StartDiffUploadRequest,
@@ -284,29 +325,70 @@ impl DebugClient {
 
     #[tracing::instrument(skip_all)]
     async fn send_diff(&mut self) -> anyhow::Result<()> {
-        self.channel_tx
-            .send(Message::DebugClient(
-                DebugClientMessage::UploadDiffChunkRequest,
-            ))
-            .await?;
+        let diff_file = {
+            let file = self
+                .diff_file
+                .as_ref()
+                .ok_or(anyhow::anyhow!("No diff file"))?;
+            tokio::fs::File::from_std(file.reopen()?)
+        };
 
-        self.channel_rx
-            .recv()
-            .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
-            .and_then(|response| match response {
-                Message::DebugClient(DebugClientMessage::UploadDiffChunkResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
-                }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
-            })
+        const CHUNK_SIZE: usize = 1024 * 1024; // 1 MB
+        let mut reader = BufReader::with_capacity(CHUNK_SIZE, diff_file);
+        loop {
+            let buffer = reader.fill_buf().await?;
+            let n = buffer.len();
+            if n == 0 {
+                break;
+            }
+
+            {
+                let hasher = self
+                    .diff_hasher
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("No diff hasher"))?;
+                hasher.update(buffer);
+            }
+
+            let chunk = buffer.to_vec();
+            self.channel_tx
+                .send(Message::DebugClient(
+                    DebugClientMessage::UploadDiffChunkRequest { chunk },
+                ))
+                .await?;
+
+            self.channel_rx
+                .recv()
+                .await
+                .ok_or(anyhow::anyhow!("Channel closed"))
+                .and_then(|response| match response {
+                    Message::DebugClient(DebugClientMessage::UploadDiffChunkResponse {
+                        result,
+                    }) => result.map_err(|e| anyhow::anyhow!(e)),
+                    _ => Err(anyhow::anyhow!("Unexpected message type")),
+                })?;
+
+            reader.consume(n);
+        }
+
+        Ok(())
     }
 
     #[tracing::instrument(skip_all)]
     async fn complete_diff_upload(&mut self) -> anyhow::Result<()> {
+        let checksum = {
+            let diff_hasher = self
+                .diff_hasher
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("No diff hasher"))?;
+            hex::encode(diff_hasher.finalize_reset())
+        };
+
+        tracing::info!("Diff checksum [{}]", checksum);
+
         self.channel_tx
             .send(Message::DebugClient(
-                DebugClientMessage::CompleteDiffUploadRequest,
+                DebugClientMessage::CompleteDiffUploadRequest { checksum },
             ))
             .await?;
 
@@ -323,7 +405,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn debugger_apply_diff(&mut self) -> anyhow::Result<()> {
+    async fn apply_diff(&mut self) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(DebugClientMessage::ApplyDiffRequest))
             .await?;
@@ -337,8 +419,7 @@ impl DebugClient {
                     result.map_err(|e| anyhow::anyhow!(e))
                 }
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
-            })?;
-        Ok(())
+            })
     }
 
     #[tracing::instrument(skip_all)]

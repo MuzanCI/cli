@@ -30,6 +30,9 @@ russh = "0.62.6"
 russh-keys = "0.49.2"
 crossterm = "0.29.0"
 nix = { version = "0.31.3", features = ["fs", "term"] }
+tempfile = "3.27.0"
+sha2 = "0.11.0"
+hex = "0.4.3"
 
 [lib]
 name = "muzanci_cli"
