@@ -8,7 +8,7 @@ job1 = Job(
     steps = [
         Step(
             name = "step1",
-            command = "echo 'step1'"
+            command = "sleep 100"
         ),
         Step(
             name = "step2",

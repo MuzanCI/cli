@@ -12,7 +12,7 @@ muzanci-interpreter = { path = "../muzanci-interpreter" }
 muzanci-transport = { path = "../muzanci-transport" }
 muzanci-git = { path = "../muzanci-git" }
 url = "2.5.8"
-tokio = { version = "1.53.1", features = ["io-std", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["io-std", "rt-multi-thread", "signal"] }
 reqwest = "0.13.4"
 tokio-util = "0.7.19"
 hyper = "1.11.0"

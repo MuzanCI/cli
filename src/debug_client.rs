@@ -18,7 +18,9 @@ use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::ChannelType;
 use muzanci_transport::mux::MuxHandle;
 
-use crate::debug_client_tunnel::run_debug_client_tunnel;
+use crate::debug_client_tunnel::tunnel_exec;
+use crate::debug_client_tunnel::tunnel_interactive;
+use crate::ssh::client::run_interactive_shell;
 use crate::stdin::StdinStream;
 
 pub struct DebugClientHandle {
@@ -429,7 +431,7 @@ impl DebugClient {
                         .unwrap()
                         .clone();
                     let exit_code = self.debugger_execute_step(step).await?;
-                    if exit_code == ExitCode::SUCCESS {
+                    if exit_code == 0 {
                         step_success[current_step] = Some(true);
                         if current_step + 1 < self.debug_config.job.steps.len() {
                             current_step += 1;
@@ -455,7 +457,7 @@ impl DebugClient {
                             .unwrap()
                             .clone();
                         let exit_code = self.debugger_execute_step(step).await?;
-                        if exit_code == ExitCode::SUCCESS {
+                        if exit_code == 0 {
                             step_success[current_step] = Some(true);
                             if current_step + 1 < self.debug_config.job.steps.len() {
                                 current_step += 1;
@@ -502,10 +504,12 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn debugger_execute_step(&mut self, step: StepConfig) -> anyhow::Result<ExitCode> {
+    async fn debugger_execute_step(&mut self, step: StepConfig) -> anyhow::Result<u32> {
+        let cmd = step.command.clone();
+
         self.channel_tx
             .send(Message::DebugClient(
-                DebugClientMessage::ExecuteStepRequest { step: step },
+                DebugClientMessage::StartShellRequest { step },
             ))
             .await?;
         self.channel_rx
@@ -513,12 +517,18 @@ impl DebugClient {
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
             .and_then(|response| match response {
-                Message::DebugClient(DebugClientMessage::ExecuteStepResponse { result }) => {
+                Message::DebugClient(DebugClientMessage::StartShellResponse { result }) => {
                     result.map_err(|e| anyhow::anyhow!(e))
                 }
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })?;
-        Ok(ExitCode::SUCCESS)
+
+        tunnel_exec(
+            &cmd,
+            self.mux_handle.clone(),
+            self.debug_config.debug_id.clone(),
+        )
+        .await
     }
 
     #[tracing::instrument(skip_all)]
@@ -543,15 +553,12 @@ impl DebugClient {
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })?;
 
-        run_debug_client_tunnel(
+        tunnel_interactive(
             stdin,
             self.mux_handle.clone(),
-            self.cancellation_token.clone(),
             self.debug_config.debug_id.clone(),
         )
-        .await?;
-
-        Ok(())
+        .await
     }
 }
 
