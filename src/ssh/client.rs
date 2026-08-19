@@ -5,8 +5,9 @@ use std::io::Write;
 use std::io::stdout;
 use std::sync::Arc;
 use tokio::io::AsyncRead;
-use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
+
+use crate::stdin::StdinStream;
 
 pub struct ClientHandler;
 
@@ -48,6 +49,7 @@ where
 }
 
 pub async fn run_interactive_shell(
+    stdin: &mut StdinStream,
     session: &mut Handle<ClientHandler>,
 ) -> Result<u32, Box<dyn std::error::Error>> {
     // 1. Open an SSH session channel
@@ -63,26 +65,26 @@ pub async fn run_interactive_shell(
     // 3. Enable Terminal Raw Mode locally
     terminal::enable_raw_mode()?;
 
-    let mut stdin = tokio::io::stdin();
-    let mut stdin_buf = [0u8; 1024];
     let mut exit_code: u32 = 0;
 
     // 4. Main IO Loop
     loop {
         tokio::select! {
             // Path A: Read local stdin -> Send to SSH channel
-            read_res = stdin.read(&mut stdin_buf) => {
-                match read_res {
-                    Ok(n) if n > 0 => {
-                        channel.data(&stdin_buf[..n]).await?;
+            data_opt = stdin.recv_raw() => {
+                match data_opt {
+                    Some(data) => {
+                        channel.data(&data[..]).await?;
                     }
-                    _ => break,
+                    None => {
+                        break; // Receiver dropped (session ended)
+                    }
                 }
             }
 
             // Path B: Read remote SSH channel events -> Print to local stdout / Detect Exit
-            maybe_msg = channel.wait() => {
-                match maybe_msg {
+            msg_opt = channel.wait() => {
+                match msg_opt {
                     Some(russh::ChannelMsg::Data { ref data }) => {
                         let mut out = stdout();
                         out.write_all(data)?;
@@ -107,8 +109,11 @@ pub async fn run_interactive_shell(
         }
     }
 
+    tracing::info!("aborted stdin_task");
+
     // 5. Restore Terminal Normal Mode
     let _ = terminal::disable_raw_mode();
+    tracing::info!("Disabled raw mode");
 
     Ok(exit_code)
 }

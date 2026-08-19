@@ -18,7 +18,8 @@ use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::ChannelType;
 use muzanci_transport::mux::MuxHandle;
 
-use crate::debug_client_tunnel::DebugClientTunnel;
+use crate::debug_client_tunnel::run_debug_client_tunnel;
+use crate::stdin::StdinStream;
 
 pub struct DebugClientHandle {
     handle: tokio::task::JoinHandle<()>,
@@ -335,9 +336,11 @@ impl DebugClient {
 
     #[tracing::instrument(skip_all)]
     async fn debugger_control(&mut self) -> anyhow::Result<()> {
+        let mut stdin = StdinStream::new(self.cancellation_token.clone());
+
         let mut current_step: usize = 0;
         let mut step_success: Vec<Option<bool>> = vec![None; self.debug_config.job.steps.len()];
-        let mut input = String::new();
+
         loop {
             // print current state
             println!("Job: {}", self.debug_config.job.name);
@@ -366,11 +369,12 @@ impl DebugClient {
             std::io::stdout().flush()?;
 
             // read user input line
-            input.clear();
-            std::io::stdin().read_line(&mut input)?;
+            tracing::info!("input.clear");
+            let line = stdin.read_line().await?;
+            tracing::info!("stdin.read_line: [{}]", line);
 
             // parse into command
-            let mut parts = input.trim().split_whitespace();
+            let mut parts = line.trim().split_whitespace();
             let command = parts.next();
             let command = match command {
                 Some(command) => match command {
@@ -404,7 +408,7 @@ impl DebugClient {
                     "n" | "next" => DebuggerCommand::Next,
                     "q" | "quit" => DebuggerCommand::Quit,
                     _ => {
-                        println!("Unknown command: {}", input.trim());
+                        println!("Unknown command: {}", line.trim());
                         continue;
                     }
                 },
@@ -477,7 +481,7 @@ impl DebugClient {
                             .get(current_step)
                             .unwrap()
                             .clone();
-                        self.debugger_ssh_step(step).await?;
+                        self.debugger_ssh_step(&mut stdin, step).await?;
                     }
                 }
                 DebuggerCommand::Move { step_idx } => {
@@ -518,7 +522,11 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn debugger_ssh_step(&mut self, step: StepConfig) -> anyhow::Result<()> {
+    async fn debugger_ssh_step(
+        &mut self,
+        stdin: &mut StdinStream,
+        step: StepConfig,
+    ) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::StartShellRequest { step },
@@ -535,13 +543,13 @@ impl DebugClient {
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })?;
 
-        let tunnel_handle = DebugClientTunnel::spawn(
+        run_debug_client_tunnel(
+            stdin,
             self.mux_handle.clone(),
             self.cancellation_token.clone(),
             self.debug_config.debug_id.clone(),
-        );
-
-        tunnel_handle.await?;
+        )
+        .await?;
 
         Ok(())
     }

@@ -16,6 +16,7 @@ mod debug_client_tunnel;
 mod error;
 mod logging;
 mod ssh;
+mod stdin;
 
 use crate::debug::run_debug_session;
 

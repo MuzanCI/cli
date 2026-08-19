@@ -41,7 +41,11 @@ pub fn run_debug_session(job: JobConfig) -> anyhow::Result<()> {
         debug_client_handle.await?;
 
         tracing::info!("debug session ended");
-        Ok(())
+
+        // DebugClient::debugger_control spawns a StdinStream task that blocks on a read syscall and
+        //  will not return until stdin is flushed with a newline. To avoid blocking process exit,
+        //  we explicitly exit immediately after the debug session ends.
+        std::process::exit(0);
     })
 }
 
