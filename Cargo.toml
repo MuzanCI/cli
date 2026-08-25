@@ -8,7 +8,7 @@ anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
 git2 = "0.21.0"
 serde = "1.0.229"
-muzanci-interpreter = { path = "../muzanci-interpreter" }
+muzanci-config = { path = "../muzanci-config" }
 muzanci-transport = { path = "../muzanci-transport" }
 muzanci-git = { path = "../muzanci-git" }
 url = "2.5.8"

@@ -1,10 +1,12 @@
 use std::path::PathBuf;
-use std::process::ExitCode;
 
+use muzanci_config::JobConfig;
+use muzanci_config::StepConfig;
+use muzanci_config::config::DebugSessionConfig;
+use muzanci_config::config::DebugSessionId;
 use muzanci_git::GitClient;
-use muzanci_interpreter::StepConfig;
+use muzanci_git::GitRemote;
 use muzanci_transport::message::DebugClientMessage;
-use muzanci_transport::message::DebugConfig;
 use muzanci_transport::message::Message;
 use sha2::Digest;
 use sha2::Sha256;
@@ -18,9 +20,8 @@ use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::ChannelType;
 use muzanci_transport::mux::MuxHandle;
 
-use crate::debug_client_tunnel::tunnel_exec;
-use crate::debug_client_tunnel::tunnel_interactive;
-use crate::ssh::client::run_interactive_shell;
+use crate::debug::debug_client_tunnel::tunnel_exec;
+use crate::debug::debug_client_tunnel::tunnel_interactive;
 use crate::stdin::StdinStream;
 
 pub struct DebugClientHandle {
@@ -43,7 +44,9 @@ pub struct DebugClient {
     cancellation_token: CancellationToken,
     channel_tx: ChannelSender,
     channel_rx: ChannelReceiver,
-    debug_config: DebugConfig,
+    debug_session_id: DebugSessionId,
+    remote: GitRemote,
+    job: JobConfig,
     diff_file: Option<NamedTempFile>,
     diff_hasher: Option<Sha256>,
 }
@@ -52,7 +55,9 @@ impl DebugClient {
     pub fn spawn(
         mux_handle: MuxHandle,
         cancellation_token: CancellationToken,
-        debug_config: DebugConfig,
+        debug_session_id: DebugSessionId,
+        remote: GitRemote,
+        job: JobConfig,
     ) -> DebugClientHandle {
         let handle = tokio::spawn(async move {
             tracing::info!("opening debug client channel");
@@ -66,7 +71,9 @@ impl DebugClient {
                 cancellation_token,
                 channel_tx,
                 channel_rx,
-                debug_config,
+                debug_session_id,
+                remote,
+                job,
                 diff_file: None,
                 diff_hasher: None,
             }
@@ -102,8 +109,7 @@ impl DebugClient {
 
     #[tracing::instrument(skip_all)]
     async fn main(&mut self) -> anyhow::Result<()> {
-        self.create_debug().await?;
-        self.connect_debugger().await?;
+        self.connect_debug_client().await?;
         self.create_sandbox().await?;
         self.checkout_branch().await?;
         self.create_diff().await?;
@@ -117,11 +123,11 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn create_debug(&mut self) -> anyhow::Result<()> {
+    async fn connect_debug_client(&mut self) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
-                DebugClientMessage::CreateDebugRequest {
-                    debug_config: self.debug_config.clone(),
+                DebugClientMessage::ConnectDebugClientRequest {
+                    debug_session_id: self.debug_session_id,
                 },
             ))
             .await?;
@@ -131,27 +137,7 @@ impl DebugClient {
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
             .and_then(|response| match response {
-                Message::DebugClient(DebugClientMessage::CreateDebugResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
-                }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
-            })
-    }
-
-    #[tracing::instrument(skip_all)]
-    async fn connect_debugger(&mut self) -> anyhow::Result<()> {
-        self.channel_tx
-            .send(Message::DebugClient(
-                DebugClientMessage::ConnectDebuggerRequest,
-            ))
-            .await?;
-
-        self.channel_rx
-            .recv()
-            .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
-            .and_then(|response| match response {
-                Message::DebugClient(DebugClientMessage::ConnectDebuggerResponse { result }) => {
+                Message::DebugClient(DebugClientMessage::ConnectDebugClientResponse { result }) => {
                     result.map_err(|e| anyhow::anyhow!(e))
                 }
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
@@ -183,8 +169,8 @@ impl DebugClient {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::CheckoutBranchRequest {
-                    url: self.debug_config.remote.url.clone(),
-                    branch: self.debug_config.remote.branch.clone(),
+                    url: self.remote.url.clone(),
+                    branch: self.remote.branch.clone(),
                 },
             ))
             .await?;
@@ -206,11 +192,7 @@ impl DebugClient {
         let mut diff_file = tempfile::NamedTempFile::new()?;
         let git_client = GitClient::try_default()?;
         let target_dir = PathBuf::from("./.git");
-        git_client.create_diff(
-            &target_dir,
-            self.debug_config.remote.branch.clone(),
-            &mut diff_file,
-        )?;
+        git_client.create_diff(&target_dir, self.remote.branch.clone(), &mut diff_file)?;
         self.diff_file = Some(diff_file);
         Ok(())
     }
@@ -341,13 +323,13 @@ impl DebugClient {
         let mut stdin = StdinStream::new(self.cancellation_token.clone());
 
         let mut current_step: usize = 0;
-        let mut step_success: Vec<Option<bool>> = vec![None; self.debug_config.job.steps.len()];
+        let mut step_success: Vec<Option<bool>> = vec![None; self.job.steps.len()];
 
         loop {
             // print current state
-            println!("Job: {}", self.debug_config.job.name);
+            println!("Job: {}", self.job.name);
             println!("Steps:");
-            for (i, step) in self.debug_config.job.steps.iter().enumerate() {
+            for (i, step) in self.job.steps.iter().enumerate() {
                 let status = if let Some(success) = step_success[i] {
                     if success { "✔" } else { "✘" }
                 } else {
@@ -423,17 +405,11 @@ impl DebugClient {
                 DebuggerCommand::Next => {
                     println!("Executing next.");
                     // Execute the step pointed by current_step.
-                    let step = self
-                        .debug_config
-                        .job
-                        .steps
-                        .get(current_step)
-                        .unwrap()
-                        .clone();
+                    let step = self.job.steps.get(current_step).unwrap().clone();
                     let exit_code = self.debugger_execute_step(step).await?;
                     if exit_code == 0 {
                         step_success[current_step] = Some(true);
-                        if current_step + 1 < self.debug_config.job.steps.len() {
+                        if current_step + 1 < self.job.steps.len() {
                             current_step += 1;
                         }
                     } else {
@@ -445,23 +421,17 @@ impl DebugClient {
                     // Starting with step_idx, execute each step until the end or a failure.
                     current_step = step_idx;
                     loop {
-                        if current_step >= self.debug_config.job.steps.len() {
+                        if current_step >= self.job.steps.len() {
                             break;
                         }
 
-                        let step = self
-                            .debug_config
-                            .job
-                            .steps
-                            .get(current_step)
-                            .unwrap()
-                            .clone();
+                        let step = self.job.steps.get(current_step).unwrap().clone();
                         let exit_code = self.debugger_execute_step(step).await?;
                         if exit_code == 0 {
                             step_success[current_step] = Some(true);
-                            if current_step + 1 < self.debug_config.job.steps.len() {
+                            if current_step + 1 < self.job.steps.len() {
                                 current_step += 1;
-                            } else if current_step + 1 == self.debug_config.job.steps.len() {
+                            } else if current_step + 1 == self.job.steps.len() {
                                 break;
                             }
                         } else {
@@ -474,22 +444,16 @@ impl DebugClient {
                 DebuggerCommand::Ssh { step_idx } => {
                     println!("Executing ssh on {}", step_idx);
                     // Open an interactive shell for the step pointed by step_idx.
-                    if step_idx < self.debug_config.job.steps.len() {
+                    if step_idx < self.job.steps.len() {
                         current_step = step_idx;
-                        let step = self
-                            .debug_config
-                            .job
-                            .steps
-                            .get(current_step)
-                            .unwrap()
-                            .clone();
+                        let step = self.job.steps.get(current_step).unwrap().clone();
                         self.debugger_ssh_step(&mut stdin, step).await?;
                     }
                 }
                 DebuggerCommand::Move { step_idx } => {
                     println!("Executing move on {}", step_idx);
                     // Move current_step to step_idx.
-                    if step_idx < self.debug_config.job.steps.len() {
+                    if step_idx < self.job.steps.len() {
                         current_step = step_idx;
                     } else {
                         println!("Step {} is out of bounds.", step_idx);
@@ -523,12 +487,7 @@ impl DebugClient {
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })?;
 
-        tunnel_exec(
-            &cmd,
-            self.mux_handle.clone(),
-            self.debug_config.debug_id.clone(),
-        )
-        .await
+        tunnel_exec(&cmd, self.mux_handle.clone(), self.debug_session_id.clone()).await
     }
 
     #[tracing::instrument(skip_all)]
@@ -556,7 +515,7 @@ impl DebugClient {
         tunnel_interactive(
             stdin,
             self.mux_handle.clone(),
-            self.debug_config.debug_id.clone(),
+            self.debug_session_id.clone(),
         )
         .await
     }

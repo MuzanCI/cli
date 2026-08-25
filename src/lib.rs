@@ -2,23 +2,21 @@ use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
-use muzanci_interpreter::Config;
-use muzanci_interpreter::collector::Collector;
+use muzanci_config::Config;
+use muzanci_config::collector::Collector;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
 
-use muzanci_interpreter::collector::Env;
+use muzanci_config::collector::Env;
 
 mod debug;
-mod debug_client;
-mod debug_client_tunnel;
 mod error;
 mod logging;
 mod ssh;
 mod stdin;
 
-use crate::debug::run_debug_session;
+use crate::debug::debug_session::run_debug_session;
 
 #[derive(Parser, Debug)]
 #[command(

@@ -1,15 +1,13 @@
-use std::process::ExitCode;
 use std::sync::Arc;
 
-use muzanci_transport::channel::ChannelByteStream;
 use muzanci_transport::channel::ChannelReceiver;
 use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::combine_into_byte_stream;
 use muzanci_transport::message::DebugClientTunnelMessage;
 use muzanci_transport::message::Message;
 
+use muzanci_config::config::DebugSessionId;
 use muzanci_transport::channel::ChannelType;
-use muzanci_transport::message::DebugId;
 use muzanci_transport::mux::MuxHandle;
 
 use crate::ssh::client::ClientHandler;
@@ -21,13 +19,13 @@ use crate::stdin::StdinStream;
 pub async fn tunnel_interactive(
     stdin: &mut StdinStream,
     mux_handle: MuxHandle,
-    debug_id: DebugId,
+    debug_session_id: DebugSessionId,
 ) -> anyhow::Result<()> {
     let mut session_handle = {
         let (channel_tx, mut channel_rx) = mux_handle
             .open_channel(ChannelType::DebugClientTunnel)
             .await?;
-        connect_debug_tunnel(&channel_tx, &mut channel_rx, debug_id).await?;
+        connect_debug_tunnel(&channel_tx, &mut channel_rx, debug_session_id).await?;
         let mut session_handle = connect_ssh_session(channel_tx, channel_rx).await?;
         authenticate_ssh_session(&mut session_handle).await?;
         session_handle
@@ -53,13 +51,13 @@ pub async fn tunnel_interactive(
 pub async fn tunnel_exec(
     cmd: &str,
     mux_handle: MuxHandle,
-    debug_id: DebugId,
+    debug_session_id: DebugSessionId,
 ) -> anyhow::Result<u32> {
     let mut session_handle = {
         let (channel_tx, mut channel_rx) = mux_handle
             .open_channel(ChannelType::DebugClientTunnel)
             .await?;
-        connect_debug_tunnel(&channel_tx, &mut channel_rx, debug_id).await?;
+        connect_debug_tunnel(&channel_tx, &mut channel_rx, debug_session_id).await?;
         let mut session_handle = connect_ssh_session(channel_tx, channel_rx).await?;
         authenticate_ssh_session(&mut session_handle).await?;
         session_handle
@@ -86,11 +84,11 @@ pub async fn tunnel_exec(
 async fn connect_debug_tunnel(
     channel_tx: &ChannelSender,
     channel_rx: &mut ChannelReceiver,
-    debug_id: DebugId,
+    debug_session_id: DebugSessionId,
 ) -> anyhow::Result<()> {
     channel_tx
         .send(Message::DebugClientTunnel(
-            DebugClientTunnelMessage::ConnectDebugTunnelRequest { debug_id },
+            DebugClientTunnelMessage::ConnectDebugTunnelRequest { debug_session_id },
         ))
         .await?;
 
