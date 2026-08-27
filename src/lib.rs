@@ -4,6 +4,7 @@ use clap::Subcommand;
 use clap::ValueEnum;
 use muzanci_config::Config;
 use muzanci_config::collector::Collector;
+use muzanci_git::GitClient;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -124,10 +125,8 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
     Ok((key.to_string(), value.to_string()))
 }
 
-fn run_show(args: ShowArgs) -> anyhow::Result<()> {
-    let ShowArgs { input, format, env } = args;
-
-    let env = env
+fn parse_env(env: Vec<(String, String)>) -> anyhow::Result<Env> {
+    let mut env = env
         .into_iter()
         .try_fold(Env::new(), |mut acc, (key, value)| {
             if acc.contains_key(&key) {
@@ -136,6 +135,24 @@ fn run_show(args: ShowArgs) -> anyhow::Result<()> {
             acc.insert(key, value);
             Ok(acc)
         })?;
+
+    if !env.contains_key("GIT_BRANCH") {
+        let branch = GitClient::try_default()?.get_branch(&PathBuf::from("."))?;
+        env.insert("GIT_BRANCH".to_string(), branch);
+    }
+
+    if !env.contains_key("GIT_COMMIT") {
+        let commit = GitClient::try_default()?.get_commit(&PathBuf::from("."))?;
+        env.insert("GIT_COMMIT".to_string(), commit);
+    }
+
+    Ok(env)
+}
+
+fn run_show(args: ShowArgs) -> anyhow::Result<()> {
+    let ShowArgs { input, format, env } = args;
+
+    let env = parse_env(env)?;
 
     let config = Config::from_file(&input, &env)?;
 
@@ -153,15 +170,7 @@ fn run_show(args: ShowArgs) -> anyhow::Result<()> {
 fn run_check(args: CheckArgs) -> anyhow::Result<()> {
     let CheckArgs { input, env } = args;
 
-    let env = env
-        .into_iter()
-        .try_fold(Env::new(), |mut acc, (key, value)| {
-            if acc.contains_key(&key) {
-                anyhow::bail!("Duplicate env key [{key}]");
-            }
-            acc.insert(key, value);
-            Ok(acc)
-        })?;
+    let env = parse_env(env)?;
 
     let config = Config::from_file(&input, &env)?;
 
@@ -176,15 +185,7 @@ fn run_debug(args: DebugArgs) -> anyhow::Result<()> {
     let _logger_guard = logging::init().unwrap();
     let DebugArgs { input, job, env } = args;
 
-    let env = env
-        .into_iter()
-        .try_fold(Env::new(), |mut acc, (key, value)| {
-            if acc.contains_key(&key) {
-                anyhow::bail!("Duplicate env key [{key}]");
-            }
-            acc.insert(key, value);
-            Ok(acc)
-        })?;
+    let env = parse_env(env)?;
 
     let collector = Collector::new(&env);
 

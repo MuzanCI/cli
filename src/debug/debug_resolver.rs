@@ -25,11 +25,9 @@ impl Future for DebugResolverHandle {
 }
 
 pub struct DebugResolver {
-    mux_handle: MuxHandle,
     cancellation_token: CancellationToken,
     channel_tx: ChannelSender,
     channel_rx: ChannelReceiver,
-    capacity: u64,
 }
 
 impl DebugResolver {
@@ -46,20 +44,18 @@ impl DebugResolver {
                 .unwrap();
             tracing::info!("running debug client actor");
             DebugResolver {
-                mux_handle,
                 cancellation_token,
                 channel_tx,
                 channel_rx,
-                capacity,
             }
-            .run()
+            .run(capacity)
             .await
         });
         DebugResolverHandle { handle }
     }
 
     #[tracing::instrument(skip_all)]
-    async fn run(&mut self) -> anyhow::Result<DebugClientConfig> {
+    async fn run(&mut self, capacity: u64) -> anyhow::Result<DebugClientConfig> {
         let cancellation_token = self.cancellation_token.clone();
         tokio::select! {
             _ = cancellation_token.cancelled() => {
@@ -67,7 +63,7 @@ impl DebugResolver {
                 Err(anyhow::anyhow!("Cancelled"))
             }
 
-            result = self.main() => {
+            result = self.main(capacity) => {
                 match result {
                     Ok(config) => {
                         tracing::info!("DebugResolver finished running.");
@@ -83,15 +79,9 @@ impl DebugResolver {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn main(&mut self) -> anyhow::Result<DebugClientConfig> {
-        let capacity = 1;
+    async fn main(&mut self, capacity: u64) -> anyhow::Result<DebugClientConfig> {
         let debug_session_id = self.create_debug_session(capacity).await?;
-        tracing::info!("Created debug session with id: {:?}", debug_session_id);
         let config = self.resolve_debug_client_config(debug_session_id).await?;
-        tracing::info!(
-            "Resolved debug client config for session id: {:?}",
-            debug_session_id
-        );
         Ok(config)
     }
 

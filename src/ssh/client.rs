@@ -1,7 +1,6 @@
 use crossterm::terminal;
 use russh::client::Handle;
 use std::io::Write;
-use std::process::ExitCode;
 
 use crate::stdin::StdinStream;
 
