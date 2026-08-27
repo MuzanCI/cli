@@ -1,12 +1,10 @@
 use std::path::PathBuf;
 
 use http::Request;
-use muzanci_transport::message::ServerId;
+use muzanci_config::config::ServerId;
 use tokio_util::sync::CancellationToken;
 
 use muzanci_config::JobConfig;
-use muzanci_config::config::DebugSessionConfig;
-use muzanci_config::config::DebugSessionId;
 use muzanci_git::GitClient;
 use muzanci_transport::MUZANCI_TRANSPORT_V1;
 use muzanci_transport::channel::FnChannelAcceptor;
@@ -22,8 +20,6 @@ pub fn run_debug_session(job: JobConfig) -> anyhow::Result<()> {
     rt.block_on(async {
         let cancellation_token = CancellationToken::new();
 
-        let debug_session_id = DebugSessionId::now_v7();
-
         let remote = {
             // TODO: Refactor these to be CLI options.
             let target_dir = PathBuf::from("./.git");
@@ -33,25 +29,25 @@ pub fn run_debug_session(job: JobConfig) -> anyhow::Result<()> {
 
         let hostname = "localhost:8002";
 
-        let server_id = {
+        let debug_client_config = {
             let capacity = 1;
-            let debug_session_config = DebugSessionConfig {
-                debug_session_id,
-                capacity,
-            };
             let mux_handle = connect_debug_resolver(hostname, cancellation_token.clone()).await?;
             let debug_resolver_handle =
-                DebugResolver::spawn(mux_handle, cancellation_token.clone(), debug_session_config);
+                DebugResolver::spawn(mux_handle, cancellation_token.clone(), capacity);
             debug_resolver_handle.await??
         };
 
         let debug_client_handle = {
-            let mux_handle =
-                connect_debug_client(hostname, cancellation_token.clone(), server_id).await?;
+            let mux_handle = connect_debug_client(
+                hostname,
+                cancellation_token.clone(),
+                debug_client_config.server_id,
+            )
+            .await?;
             DebugClient::spawn(
                 mux_handle,
                 cancellation_token,
-                debug_session_id,
+                debug_client_config.debug_session_id,
                 remote,
                 job,
             )
@@ -115,7 +111,8 @@ pub async fn connect_debug_resolver(
         );
     });
 
-    let mux_handle = Mux::spawn(server_stream, channel_acceptor, cancellation_token);
+    let (mux_handle, _join_handle) =
+        Mux::spawn(server_stream, channel_acceptor, cancellation_token);
 
     Ok(mux_handle)
 }
@@ -170,7 +167,8 @@ pub async fn connect_debug_client(
         );
     });
 
-    let mux_handle = Mux::spawn(server_stream, channel_acceptor, cancellation_token);
+    let (mux_handle, _join_handle) =
+        Mux::spawn(server_stream, channel_acceptor, cancellation_token);
 
     Ok(mux_handle)
 }

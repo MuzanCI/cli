@@ -1,7 +1,7 @@
-use muzanci_config::config::DebugSessionConfig;
+use muzanci_config::config::DebugClientConfig;
+use muzanci_config::config::DebugSessionId;
 use muzanci_transport::message::DebugResolverMessage;
 use muzanci_transport::message::Message;
-use muzanci_transport::message::ServerId;
 use tokio_util::sync::CancellationToken;
 
 use muzanci_transport::channel::ChannelReceiver;
@@ -10,11 +10,11 @@ use muzanci_transport::channel::ChannelType;
 use muzanci_transport::mux::MuxHandle;
 
 pub struct DebugResolverHandle {
-    handle: tokio::task::JoinHandle<Result<ServerId, anyhow::Error>>,
+    handle: tokio::task::JoinHandle<Result<DebugClientConfig, anyhow::Error>>,
 }
 
 impl Future for DebugResolverHandle {
-    type Output = Result<Result<ServerId, anyhow::Error>, tokio::task::JoinError>;
+    type Output = Result<Result<DebugClientConfig, anyhow::Error>, tokio::task::JoinError>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -29,14 +29,14 @@ pub struct DebugResolver {
     cancellation_token: CancellationToken,
     channel_tx: ChannelSender,
     channel_rx: ChannelReceiver,
-    debug_session_config: DebugSessionConfig,
+    capacity: u64,
 }
 
 impl DebugResolver {
     pub fn spawn(
         mux_handle: MuxHandle,
         cancellation_token: CancellationToken,
-        debug_session_config: DebugSessionConfig,
+        capacity: u64,
     ) -> DebugResolverHandle {
         let handle = tokio::spawn(async move {
             tracing::info!("opening debug client channel");
@@ -50,7 +50,7 @@ impl DebugResolver {
                 cancellation_token,
                 channel_tx,
                 channel_rx,
-                debug_session_config,
+                capacity,
             }
             .run()
             .await
@@ -59,7 +59,7 @@ impl DebugResolver {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn run(&mut self) -> anyhow::Result<ServerId> {
+    async fn run(&mut self) -> anyhow::Result<DebugClientConfig> {
         let cancellation_token = self.cancellation_token.clone();
         tokio::select! {
             _ = cancellation_token.cancelled() => {
@@ -69,9 +69,9 @@ impl DebugResolver {
 
             result = self.main() => {
                 match result {
-                    Ok(server_id) => {
+                    Ok(config) => {
                         tracing::info!("DebugResolver finished running.");
-                        Ok(server_id)
+                        Ok(config)
                     }
                     Err(e) => {
                         tracing::error!("DebugResolver encountered an error: {:?}", e);
@@ -83,19 +83,23 @@ impl DebugResolver {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn main(&mut self) -> anyhow::Result<ServerId> {
-        self.create_debug().await?;
-        let server_id = self.find_debugger().await?;
-        Ok(server_id)
+    async fn main(&mut self) -> anyhow::Result<DebugClientConfig> {
+        let capacity = 1;
+        let debug_session_id = self.create_debug_session(capacity).await?;
+        tracing::info!("Created debug session with id: {:?}", debug_session_id);
+        let config = self.resolve_debug_client_config(debug_session_id).await?;
+        tracing::info!(
+            "Resolved debug client config for session id: {:?}",
+            debug_session_id
+        );
+        Ok(config)
     }
 
     #[tracing::instrument(skip_all)]
-    async fn create_debug(&mut self) -> anyhow::Result<()> {
+    async fn create_debug_session(&mut self, capacity: u64) -> anyhow::Result<DebugSessionId> {
         self.channel_tx
             .send(Message::DebugResolver(
-                DebugResolverMessage::CreateDebugSessionRequest {
-                    debug_session_config: self.debug_session_config.clone(),
-                },
+                DebugResolverMessage::CreateDebugSessionRequest { capacity },
             ))
             .await?;
 
@@ -112,12 +116,13 @@ impl DebugResolver {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn find_debugger(&mut self) -> anyhow::Result<ServerId> {
+    async fn resolve_debug_client_config(
+        &mut self,
+        debug_session_id: DebugSessionId,
+    ) -> anyhow::Result<DebugClientConfig> {
         self.channel_tx
             .send(Message::DebugResolver(
-                DebugResolverMessage::FindDebuggerRequest {
-                    debug_session_id: self.debug_session_config.debug_session_id,
-                },
+                DebugResolverMessage::ResolveDebugClientConfigRequest { debug_session_id },
             ))
             .await?;
 
@@ -126,9 +131,9 @@ impl DebugResolver {
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
             .and_then(|response| match response {
-                Message::DebugResolver(DebugResolverMessage::FindDebuggerResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
-                }
+                Message::DebugResolver(
+                    DebugResolverMessage::ResolveDebugClientConfigResponse { result },
+                ) => result.map_err(|e| anyhow::anyhow!(e)),
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })
     }

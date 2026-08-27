@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use muzanci_config::JobConfig;
 use muzanci_config::StepConfig;
-use muzanci_config::config::DebugSessionConfig;
 use muzanci_config::config::DebugSessionId;
 use muzanci_git::GitClient;
 use muzanci_git::GitRemote;
@@ -15,6 +14,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio_util::sync::CancellationToken;
 
+use muzanci_config::config::ImageConfig;
 use muzanci_transport::channel::ChannelReceiver;
 use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::ChannelType;
@@ -110,7 +110,7 @@ impl DebugClient {
     #[tracing::instrument(skip_all)]
     async fn main(&mut self) -> anyhow::Result<()> {
         self.connect_debug_client().await?;
-        self.create_sandbox().await?;
+        self.create_sandbox(self.job.image.clone()).await?;
         self.checkout_branch().await?;
         self.create_diff().await?;
         self.start_diff_upload().await?;
@@ -145,10 +145,10 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn create_sandbox(&mut self) -> anyhow::Result<()> {
+    async fn create_sandbox(&mut self, image: ImageConfig) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
-                DebugClientMessage::CreateSandboxRequest,
+                DebugClientMessage::CreateSandboxRequest { image },
             ))
             .await?;
 
