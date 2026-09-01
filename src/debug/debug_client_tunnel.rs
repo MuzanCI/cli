@@ -22,7 +22,7 @@ pub async fn tunnel_interactive(
     debug_session_id: DebugSessionId,
 ) -> anyhow::Result<()> {
     let mut session_handle = {
-        let (channel_tx, mut channel_rx) = mux_handle
+        let (channel_tx, mut channel_rx, _notify) = mux_handle
             .open_channel(ChannelType::DebugClientTunnel)
             .await?;
         connect_debug_tunnel(&channel_tx, &mut channel_rx, debug_session_id).await?;
@@ -54,7 +54,7 @@ pub async fn tunnel_exec(
     debug_session_id: DebugSessionId,
 ) -> anyhow::Result<u32> {
     let mut session_handle = {
-        let (channel_tx, mut channel_rx) = mux_handle
+        let (channel_tx, mut channel_rx, _notify) = mux_handle
             .open_channel(ChannelType::DebugClientTunnel)
             .await?;
         connect_debug_tunnel(&channel_tx, &mut channel_rx, debug_session_id).await?;

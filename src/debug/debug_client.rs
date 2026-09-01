@@ -61,7 +61,7 @@ impl DebugClient {
     ) -> DebugClientHandle {
         let handle = tokio::spawn(async move {
             tracing::info!("opening debug client channel");
-            let (channel_tx, channel_rx) = mux_handle
+            let (channel_tx, channel_rx, _notify) = mux_handle
                 .open_channel(ChannelType::DebugClient)
                 .await
                 .unwrap();
