@@ -43,7 +43,6 @@ pub struct DebugClient {
     mux_handle: MuxHandle,
     cancellation_token: CancellationToken,
     channel_tx: ChannelSender,
-    channel_rx: ChannelReceiver,
     debug_session_id: DebugSessionId,
     remote: GitRemote,
     job: JobConfig,
@@ -61,7 +60,7 @@ impl DebugClient {
     ) -> DebugClientHandle {
         let handle = tokio::spawn(async move {
             tracing::info!("opening debug client channel");
-            let (channel_tx, channel_rx, _notify) = mux_handle
+            let (channel_tx, channel_rx, channel_closed) = mux_handle
                 .open_channel(ChannelType::DebugClient)
                 .await
                 .unwrap();
@@ -70,14 +69,13 @@ impl DebugClient {
                 mux_handle,
                 cancellation_token,
                 channel_tx,
-                channel_rx,
                 debug_session_id,
                 remote,
                 job,
                 diff_file: None,
                 diff_hasher: None,
             }
-            .run()
+            .run(channel_rx, channel_closed)
             .await
             .unwrap();
         });
@@ -85,7 +83,11 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn run(&mut self) -> anyhow::Result<()> {
+    async fn run(
+        self,
+        channel_rx: ChannelReceiver,
+        channel_closed: CancellationToken,
+    ) -> anyhow::Result<()> {
         let cancellation_token = self.cancellation_token.clone();
         tokio::select! {
             _ = cancellation_token.cancelled() => {
@@ -93,7 +95,12 @@ impl DebugClient {
                 Ok(())
             }
 
-            result = self.main() => {
+            _ = channel_closed.cancelled() => {
+                tracing::info!("DebugClient channel closed. Stopping DebugClient task.");
+                Ok(())
+            }
+
+            result = self.main(channel_rx) => {
                 match result {
                     Ok(_) => {
                         tracing::info!("DebugClient finished running.");
@@ -108,22 +115,23 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn main(&mut self) -> anyhow::Result<()> {
-        self.connect_debug_client().await?;
-        self.create_sandbox(self.job.image.clone()).await?;
-        self.checkout_branch().await?;
-        self.create_diff().await?;
-        self.start_diff_upload().await?;
-        self.send_diff().await?;
-        self.complete_diff_upload().await?;
-        self.apply_diff().await?;
-        self.debugger_control().await?;
+    async fn main(mut self, mut channel_rx: ChannelReceiver) -> anyhow::Result<()> {
+        self.connect_debug_client(&mut channel_rx).await?;
+        self.create_sandbox(&mut channel_rx, self.job.image.clone())
+            .await?;
+        self.checkout_branch(&mut channel_rx).await?;
+        self.create_diff(&mut channel_rx).await?;
+        self.start_diff_upload(&mut channel_rx).await?;
+        self.send_diff(&mut channel_rx).await?;
+        self.complete_diff_upload(&mut channel_rx).await?;
+        self.apply_diff(&mut channel_rx).await?;
+        self.debugger_control(&mut channel_rx).await?;
 
         Ok(())
     }
 
     #[tracing::instrument(skip_all)]
-    async fn connect_debug_client(&mut self) -> anyhow::Result<()> {
+    async fn connect_debug_client(&self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::ConnectDebugClientRequest {
@@ -132,7 +140,7 @@ impl DebugClient {
             ))
             .await?;
 
-        self.channel_rx
+        channel_rx
             .recv()
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
@@ -145,14 +153,18 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn create_sandbox(&mut self, image: ImageConfig) -> anyhow::Result<()> {
+    async fn create_sandbox(
+        &self,
+        channel_rx: &mut ChannelReceiver,
+        image: ImageConfig,
+    ) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::CreateSandboxRequest { image },
             ))
             .await?;
 
-        self.channel_rx
+        channel_rx
             .recv()
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
@@ -165,7 +177,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn checkout_branch(&mut self) -> anyhow::Result<()> {
+    async fn checkout_branch(&self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::CheckoutBranchRequest {
@@ -175,7 +187,7 @@ impl DebugClient {
             ))
             .await?;
 
-        self.channel_rx
+        channel_rx
             .recv()
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
@@ -188,7 +200,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn create_diff(&mut self) -> anyhow::Result<()> {
+    async fn create_diff(&mut self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
         let mut diff_file = tempfile::NamedTempFile::new()?;
         let git_client = GitClient::try_default()?;
         let target_dir = PathBuf::from("./.git");
@@ -198,7 +210,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn start_diff_upload(&mut self) -> anyhow::Result<()> {
+    async fn start_diff_upload(&mut self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
         self.diff_hasher = Some(Sha256::new());
 
         self.channel_tx
@@ -207,7 +219,7 @@ impl DebugClient {
             ))
             .await?;
 
-        self.channel_rx
+        channel_rx
             .recv()
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
@@ -220,7 +232,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn send_diff(&mut self) -> anyhow::Result<()> {
+    async fn send_diff(&mut self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
         let diff_file = {
             let file = self
                 .diff_file
@@ -253,7 +265,7 @@ impl DebugClient {
                 ))
                 .await?;
 
-            self.channel_rx
+            channel_rx
                 .recv()
                 .await
                 .ok_or(anyhow::anyhow!("Channel closed"))
@@ -271,7 +283,10 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn complete_diff_upload(&mut self) -> anyhow::Result<()> {
+    async fn complete_diff_upload(
+        &mut self,
+        channel_rx: &mut ChannelReceiver,
+    ) -> anyhow::Result<()> {
         let checksum = {
             let diff_hasher = self
                 .diff_hasher
@@ -288,7 +303,7 @@ impl DebugClient {
             ))
             .await?;
 
-        self.channel_rx
+        channel_rx
             .recv()
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
@@ -301,12 +316,12 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn apply_diff(&mut self) -> anyhow::Result<()> {
+    async fn apply_diff(&self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
         self.channel_tx
             .send(Message::DebugClient(DebugClientMessage::ApplyDiffRequest))
             .await?;
 
-        self.channel_rx
+        channel_rx
             .recv()
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
@@ -319,7 +334,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn debugger_control(&mut self) -> anyhow::Result<()> {
+    async fn debugger_control(&self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
         let mut stdin = StdinStream::new(self.cancellation_token.clone());
 
         let mut current_step: usize = 0;
@@ -406,7 +421,7 @@ impl DebugClient {
                     println!("Executing next.");
                     // Execute the step pointed by current_step.
                     let step = self.job.steps.get(current_step).unwrap().clone();
-                    let exit_code = self.debugger_execute_step(step).await?;
+                    let exit_code = self.debugger_execute_step(channel_rx, step).await?;
                     if exit_code == 0 {
                         step_success[current_step] = Some(true);
                         if current_step + 1 < self.job.steps.len() {
@@ -426,7 +441,7 @@ impl DebugClient {
                         }
 
                         let step = self.job.steps.get(current_step).unwrap().clone();
-                        let exit_code = self.debugger_execute_step(step).await?;
+                        let exit_code = self.debugger_execute_step(channel_rx, step).await?;
                         if exit_code == 0 {
                             step_success[current_step] = Some(true);
                             if current_step + 1 < self.job.steps.len() {
@@ -447,7 +462,7 @@ impl DebugClient {
                     if step_idx < self.job.steps.len() {
                         current_step = step_idx;
                         let step = self.job.steps.get(current_step).unwrap().clone();
-                        self.debugger_ssh_step(&mut stdin, step).await?;
+                        self.debugger_ssh_step(channel_rx, &mut stdin, step).await?;
                     }
                 }
                 DebuggerCommand::Move { step_idx } => {
@@ -468,7 +483,11 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn debugger_execute_step(&mut self, step: StepConfig) -> anyhow::Result<u32> {
+    async fn debugger_execute_step(
+        &self,
+        channel_rx: &mut ChannelReceiver,
+        step: StepConfig,
+    ) -> anyhow::Result<u32> {
         let cmd = step.command.clone();
 
         self.channel_tx
@@ -476,7 +495,7 @@ impl DebugClient {
                 DebugClientMessage::StartShellRequest { step },
             ))
             .await?;
-        self.channel_rx
+        channel_rx
             .recv()
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
@@ -492,7 +511,8 @@ impl DebugClient {
 
     #[tracing::instrument(skip_all)]
     async fn debugger_ssh_step(
-        &mut self,
+        &self,
+        channel_rx: &mut ChannelReceiver,
         stdin: &mut StdinStream,
         step: StepConfig,
     ) -> anyhow::Result<()> {
@@ -501,7 +521,7 @@ impl DebugClient {
                 DebugClientMessage::StartShellRequest { step },
             ))
             .await?;
-        self.channel_rx
+        channel_rx
             .recv()
             .await
             .ok_or(anyhow::anyhow!("Channel closed"))
