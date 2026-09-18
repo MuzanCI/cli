@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
 git2 = "0.21.0"
-serde = "1.0.229"
+serde = { version = "1.0.229", features = ["derive"] }
 muzanci-config = { path = "../muzanci-config" }
 muzanci-transport = { path = "../muzanci-transport" }
 muzanci-git = { path = "../muzanci-git" }
@@ -33,6 +33,9 @@ nix = { version = "0.31.3", features = ["fs", "term"] }
 tempfile = "3.27.0"
 sha2 = "0.11.0"
 hex = "0.4.3"
+toml = "1.1.6"
+uuid = "1.26.1"
+rpassword = "7.5.4"
 
 [lib]
 name = "muzanci_cli"

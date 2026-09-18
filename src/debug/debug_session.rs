@@ -10,62 +10,68 @@ use muzanci_transport::MUZANCI_TRANSPORT_V1;
 use muzanci_transport::channel::FnChannelAcceptor;
 use muzanci_transport::mux::Mux;
 use muzanci_transport::mux::MuxHandle;
+use uuid::Uuid;
 
 use crate::debug::debug_client::DebugClient;
 use crate::debug::debug_resolver::DebugResolver;
 
-pub fn run_debug_session(job: JobConfig) -> anyhow::Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
+pub async fn run_debug_session(
+    cancellation_token: CancellationToken,
+    secret: &str,
+    account_id: &Uuid,
+    job: JobConfig,
+) -> anyhow::Result<()> {
+    let remote = {
+        // TODO: Refactor these to be CLI options.
+        let target_dir = PathBuf::from("./.git");
+        let remote_name = "origin";
+        GitClient::try_default()?.get_remote(&target_dir, remote_name)?
+    };
 
-    rt.block_on(async {
-        let cancellation_token = CancellationToken::new();
+    let hostname = "localhost:8002";
 
-        let remote = {
-            // TODO: Refactor these to be CLI options.
-            let target_dir = PathBuf::from("./.git");
-            let remote_name = "origin";
-            GitClient::try_default()?.get_remote(&target_dir, remote_name)?
-        };
+    let debug_client_config = {
+        let capacity = 1;
+        let mux_handle =
+            connect_debug_resolver(hostname, secret, &account_id, cancellation_token.clone())
+                .await?;
+        let debug_resolver_handle =
+            DebugResolver::spawn(mux_handle, cancellation_token.clone(), capacity);
+        debug_resolver_handle.await??
+    };
 
-        let hostname = "localhost:8002";
+    let debug_client_handle = {
+        let mux_handle = connect_debug_client(
+            hostname,
+            secret,
+            &account_id,
+            cancellation_token.clone(),
+            debug_client_config.server_id,
+        )
+        .await?;
+        DebugClient::spawn(
+            mux_handle,
+            cancellation_token,
+            debug_client_config.debug_session_id,
+            remote,
+            job,
+        )
+    };
+    debug_client_handle.await?;
 
-        let debug_client_config = {
-            let capacity = 1;
-            let mux_handle = connect_debug_resolver(hostname, cancellation_token.clone()).await?;
-            let debug_resolver_handle =
-                DebugResolver::spawn(mux_handle, cancellation_token.clone(), capacity);
-            debug_resolver_handle.await??
-        };
+    tracing::info!("debug session ended");
 
-        let debug_client_handle = {
-            let mux_handle = connect_debug_client(
-                hostname,
-                cancellation_token.clone(),
-                debug_client_config.server_id,
-            )
-            .await?;
-            DebugClient::spawn(
-                mux_handle,
-                cancellation_token,
-                debug_client_config.debug_session_id,
-                remote,
-                job,
-            )
-        };
-        debug_client_handle.await?;
-
-        tracing::info!("debug session ended");
-
-        // DebugClient::debugger_control spawns a StdinStream task that blocks on a read syscall and
-        //  will not return until stdin is flushed with a newline. To avoid blocking process exit,
-        //  we explicitly exit immediately after the debug session ends.
-        std::process::exit(0);
-    })
+    // DebugClient::debugger_control spawns a StdinStream task that blocks on a read syscall and
+    //  will not return until stdin is flushed with a newline. To avoid blocking process exit,
+    //  we explicitly exit immediately after the debug session ends.
+    std::process::exit(0);
 }
 
 #[tracing::instrument(skip_all)]
 pub async fn connect_debug_resolver(
     hostname: &str,
+    secret: &str,
+    account_id: &Uuid,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<MuxHandle> {
     let server_stream = {
@@ -85,10 +91,12 @@ pub async fn connect_debug_resolver(
 
     let request = Request::builder()
         .method("POST")
-        .uri("/debug_resolver")
+        .uri("/begin_debug_resolver")
         .header(http::header::HOST, hostname)
         .header(http::header::CONNECTION, "Upgrade")
         .header(http::header::UPGRADE, MUZANCI_TRANSPORT_V1)
+        .header("x-muzanci-personal-access-token", secret.to_string())
+        .header("x-muzanci-account-id", account_id.to_string())
         .body(http_body_util::Empty::<bytes::Bytes>::new())
         .unwrap();
 
@@ -121,6 +129,8 @@ pub async fn connect_debug_resolver(
 #[tracing::instrument(skip_all)]
 pub async fn connect_debug_client(
     hostname: &str,
+    secret: &str,
+    account_id: &Uuid,
     cancellation_token: CancellationToken,
     server_id: ServerId,
 ) -> anyhow::Result<MuxHandle> {
@@ -141,10 +151,12 @@ pub async fn connect_debug_client(
 
     let request = Request::builder()
         .method("POST")
-        .uri("/debug_client")
+        .uri("/begin_debug_client")
         .header(http::header::HOST, hostname)
         .header(http::header::CONNECTION, "Upgrade")
         .header(http::header::UPGRADE, MUZANCI_TRANSPORT_V1)
+        .header("x-muzanci-personal-access-token", secret.to_string())
+        .header("x-muzanci-account-id", account_id.to_string())
         .header("X-MUZANCI-SERVER-ID", server_id.to_string())
         .body(http_body_util::Empty::<bytes::Bytes>::new())
         .unwrap();

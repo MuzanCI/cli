@@ -8,16 +8,25 @@ use muzanci_git::GitClient;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 use muzanci_config::collector::Env;
 
 mod debug;
 mod error;
 mod logging;
+mod prompt;
+mod signal_receiver;
 mod ssh;
 mod stdin;
+mod user_config;
 
 use crate::debug::debug_session::run_debug_session;
+use crate::prompt::Intent;
+use crate::prompt::prompt_account_selection;
+use crate::prompt::prompt_login;
+use crate::signal_receiver::SignalReceiver;
+use crate::user_config::UserConfig;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -206,5 +215,45 @@ fn run_debug(args: DebugArgs) -> anyhow::Result<()> {
         println!("  - {}", step.name);
     }
 
-    run_debug_session(job)
+    let rt = tokio::runtime::Runtime::new()?;
+
+    rt.block_on(async {
+        let home_path = PathBuf::from(std::env::var("HOME")?);
+        let config_path = home_path.join(".muzanci").join("config.toml");
+        let mut user = UserConfig::from_file(&config_path)?;
+
+        let secret = match user.personal_access_token_secret.clone() {
+            Some(secret) => secret,
+            None => {
+                let secret = prompt_login(Intent::Debug)?;
+                user.personal_access_token_secret = Some(secret.to_string());
+                user.to_file(&config_path)?;
+                secret
+            }
+        };
+
+        let account_id = match user.account_id.clone() {
+            Some(account_id) => account_id,
+            None => {
+                let account_id = prompt_account_selection(&secret).await?;
+                user.account_id = Some(account_id);
+                user.to_file(&config_path)?;
+                account_id
+            }
+        };
+
+        let cancellation_token = CancellationToken::new();
+        let run_debug_session_handle = tokio::spawn({
+            let cancellation_token = cancellation_token.clone();
+            async move {
+                run_debug_session(cancellation_token.clone(), &secret, &account_id, job).await
+            }
+        });
+
+        let signal_receiver_handle = SignalReceiver::spawn(cancellation_token.clone());
+
+        let _ = tokio::join!(run_debug_session_handle, signal_receiver_handle);
+
+        Ok(())
+    })
 }
