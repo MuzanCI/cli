@@ -1,1 +1,3 @@
 MuzanCI CLI
+
+test0
