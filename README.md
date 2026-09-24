@@ -1,3 +1,3 @@
 MuzanCI CLI
 
-test1
+test2
