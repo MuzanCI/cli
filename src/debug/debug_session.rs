@@ -4,7 +4,7 @@ use http::Request;
 use muzanci_config::config::ServerId;
 use tokio_util::sync::CancellationToken;
 
-use muzanci_config::JobConfig;
+use muzanci_config::config::JobConfig;
 use muzanci_git::GitClient;
 use muzanci_transport::MUZANCI_TRANSPORT_V1;
 use muzanci_transport::channel::FnChannelAcceptor;
