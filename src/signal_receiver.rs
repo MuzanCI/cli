@@ -1,5 +1,4 @@
 use std::future::IntoFuture;
-use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 use tokio::signal::unix::SignalKind;

@@ -120,7 +120,7 @@ impl DebugClient {
         self.create_sandbox(&mut channel_rx, self.job.image.clone())
             .await?;
         self.checkout_branch(&mut channel_rx).await?;
-        self.create_diff(&mut channel_rx).await?;
+        self.create_diff().await?;
         self.start_diff_upload(&mut channel_rx).await?;
         self.send_diff(&mut channel_rx).await?;
         self.complete_diff_upload(&mut channel_rx).await?;
@@ -200,7 +200,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn create_diff(&mut self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
+    async fn create_diff(&mut self) -> anyhow::Result<()> {
         let mut diff_file = tempfile::NamedTempFile::new()?;
         let git_client = GitClient::try_default()?;
         let target_dir = PathBuf::from("./.git");
@@ -373,7 +373,7 @@ impl DebugClient {
             tracing::info!("stdin.read_line: [{}]", line);
 
             // parse into command
-            let mut parts = line.trim().split_whitespace();
+            let mut parts = line.split_whitespace();
             let command = parts.next();
             let command = match command {
                 Some(command) => match command {
@@ -506,7 +506,7 @@ impl DebugClient {
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })?;
 
-        tunnel_exec(&cmd, self.mux_handle.clone(), self.debug_session_id.clone()).await
+        tunnel_exec(&cmd, self.mux_handle.clone(), self.debug_session_id).await
     }
 
     #[tracing::instrument(skip_all)]
@@ -532,12 +532,7 @@ impl DebugClient {
                 _ => Err(anyhow::anyhow!("Unexpected message type")),
             })?;
 
-        tunnel_interactive(
-            stdin,
-            self.mux_handle.clone(),
-            self.debug_session_id.clone(),
-        )
-        .await
+        tunnel_interactive(stdin, self.mux_handle.clone(), self.debug_session_id).await
     }
 }
 

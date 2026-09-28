@@ -44,3 +44,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "muzanci-cli"
 path = "src/main.rs"
+
+[lints.clippy]
+new_without_default = "allow"

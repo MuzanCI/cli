@@ -5,10 +5,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::prompt::Intent;
-use crate::prompt::prompt_account_selection;
-use crate::prompt::prompt_login;
-
 #[derive(Serialize, Deserialize)]
 pub struct UserConfig {
     pub personal_access_token_secret: Option<String>,
@@ -24,6 +20,7 @@ impl UserConfig {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;

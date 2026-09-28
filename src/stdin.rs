@@ -63,7 +63,10 @@ impl StdinStream {
             // Wait for next byte chunk from the single stdin task
             match self.rx.recv().await {
                 Some(chunk) => self.buffer.extend_from_slice(&chunk),
-                None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF")),
+                None => {
+                    let e = io::Error::new(io::ErrorKind::UnexpectedEof, "EOF");
+                    return Err(e);
+                }
             }
         }
     }

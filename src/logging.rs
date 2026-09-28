@@ -41,9 +41,8 @@ pub fn init() -> Result<Option<tracing_appender::non_blocking::WorkerGuard>, TEr
 #[cfg(any(not(debug_assertions), test))]
 #[tracing::instrument(skip_all)]
 pub fn init() -> Result<Option<tracing_appender::non_blocking::WorkerGuard>, TError> {
-    let log_directory = format!(".");
-    std::fs::create_dir_all(&log_directory)
-        .map_err(|e| LoggingError::CreateLogDirectoryFailed(e))?;
+    let log_directory = ".".to_string();
+    std::fs::create_dir_all(&log_directory).map_err(LoggingError::CreateLogDirectoryFailed)?;
 
     let (file_writer, guard) = tracing_appender::non_blocking(tracing_appender::rolling::never(
         &log_directory,

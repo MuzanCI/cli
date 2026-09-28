@@ -33,7 +33,7 @@ pub async fn run_debug_session(
     let debug_client_config = {
         let capacity = 1;
         let mux_handle =
-            connect_debug_resolver(hostname, secret, &account_id, cancellation_token.clone())
+            connect_debug_resolver(hostname, secret, account_id, cancellation_token.clone())
                 .await?;
         let debug_resolver_handle =
             DebugResolver::spawn(mux_handle, cancellation_token.clone(), capacity);
@@ -44,7 +44,7 @@ pub async fn run_debug_session(
         let mux_handle = connect_debug_client(
             hostname,
             secret,
-            &account_id,
+            account_id,
             cancellation_token.clone(),
             debug_client_config.server_id,
         )
@@ -103,10 +103,11 @@ pub async fn connect_debug_resolver(
     let response = send_request.send_request(request).await?;
 
     if response.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-        return Err(anyhow::anyhow!(
+        let e = anyhow::anyhow!(
             "Failed to upgrade connection. Server responded with status: {}",
             response.status()
-        ));
+        );
+        return Err(e);
     }
 
     let server_stream = hyper::upgrade::on(response).await?;
@@ -164,10 +165,11 @@ pub async fn connect_debug_client(
     let response = send_request.send_request(request).await?;
 
     if response.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-        return Err(anyhow::anyhow!(
+        let e = anyhow::anyhow!(
             "Failed to upgrade connection. Server responded with status: {}",
             response.status()
-        ));
+        );
+        return Err(e);
     }
 
     let server_stream = hyper::upgrade::on(response).await?;

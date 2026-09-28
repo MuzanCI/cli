@@ -129,7 +129,8 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
     let key = s[..pos].trim();
     let value = s[pos + 1..].trim();
     if key.is_empty() {
-        return Err(format!("invalid KEY=VALUE: key is empty in [{s}]"));
+        let e = format!("invalid KEY=VALUE: key is empty in [{s}]");
+        return Err(e);
     }
     Ok((key.to_string(), value.to_string()))
 }
@@ -232,7 +233,7 @@ fn run_debug(args: DebugArgs) -> anyhow::Result<()> {
             }
         };
 
-        let account_id = match user.account_id.clone() {
+        let account_id = match user.account_id {
             Some(account_id) => account_id,
             None => {
                 let account_id = prompt_account_selection(&secret).await?;
