@@ -8,7 +8,7 @@ external_job = Job(
     steps=[
         Step(
             name="external_step",
-            command="for i in {0..20}; do echo $i; echo $i >&2; sleep 1; done",
+            command="for i in {0..60}; do echo $i; echo $i >&2; sleep 1; done",
         ),
     ],
 )
