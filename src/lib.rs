@@ -247,7 +247,7 @@ fn run_debug(args: DebugArgs) -> anyhow::Result<()> {
         let run_debug_session_handle = tokio::spawn({
             let cancellation_token = cancellation_token.clone();
             async move {
-                run_debug_session(cancellation_token.clone(), &secret, &account_id, job).await
+                run_debug_session(cancellation_token.clone(), &secret, account_id, job).await
             }
         });
 

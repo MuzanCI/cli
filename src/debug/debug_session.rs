@@ -18,7 +18,7 @@ use crate::debug::debug_resolver::DebugResolver;
 pub async fn run_debug_session(
     cancellation_token: CancellationToken,
     secret: &str,
-    account_id: &Uuid,
+    account_id: Uuid,
     job: JobConfig,
 ) -> anyhow::Result<()> {
     let remote = {
@@ -71,7 +71,7 @@ pub async fn run_debug_session(
 pub async fn connect_debug_resolver(
     hostname: &str,
     secret: &str,
-    account_id: &Uuid,
+    account_id: Uuid,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<MuxHandle> {
     let server_stream = {
@@ -131,7 +131,7 @@ pub async fn connect_debug_resolver(
 pub async fn connect_debug_client(
     hostname: &str,
     secret: &str,
-    account_id: &Uuid,
+    account_id: Uuid,
     cancellation_token: CancellationToken,
     server_id: ServerId,
 ) -> anyhow::Result<MuxHandle> {
