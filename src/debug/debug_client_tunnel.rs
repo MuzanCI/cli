@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use muzanci_observability::TError;
 use muzanci_transport::channel::ChannelReceiver;
 use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::combine_into_byte_stream;
@@ -20,7 +21,7 @@ pub async fn tunnel_interactive(
     stdin: &mut StdinStream,
     mux_handle: MuxHandle,
     debug_session_id: DebugSessionId,
-) -> anyhow::Result<()> {
+) -> Result<(), TError> {
     let mut session_handle = {
         let (channel_tx, mut channel_rx, _notify) = mux_handle
             .open_channel(ChannelType::DebugClientTunnel)
@@ -36,7 +37,7 @@ pub async fn tunnel_interactive(
             tracing::info!("Shell exited with code: {}", exit_code);
         }
         Err(e) => {
-            anyhow::bail!("Shell error: {}", e);
+            return Err(TError::new(&format!("Shell error: {}", e)));
         }
     }
 
@@ -52,7 +53,7 @@ pub async fn tunnel_exec(
     cmd: &str,
     mux_handle: MuxHandle,
     debug_session_id: DebugSessionId,
-) -> anyhow::Result<u32> {
+) -> Result<u32, TError> {
     let mut session_handle = {
         let (channel_tx, mut channel_rx, _notify) = mux_handle
             .open_channel(ChannelType::DebugClientTunnel)
@@ -69,7 +70,7 @@ pub async fn tunnel_exec(
             exit_code
         }
         Err(e) => {
-            anyhow::bail!("Shell error: {}", e);
+            return Err(TError::new(&format!("Shell error: {}", e)));
         }
     };
 
@@ -85,7 +86,7 @@ async fn connect_debug_tunnel(
     channel_tx: &ChannelSender,
     channel_rx: &mut ChannelReceiver,
     debug_session_id: DebugSessionId,
-) -> anyhow::Result<()> {
+) -> Result<(), TError> {
     channel_tx
         .send(Message::DebugClientTunnel(
             DebugClientTunnelMessage::ConnectDebugTunnelRequest { debug_session_id },
@@ -95,12 +96,12 @@ async fn connect_debug_tunnel(
     channel_rx
         .recv()
         .await
-        .ok_or(anyhow::anyhow!("Channel closed"))
+        .ok_or_else(|| TError::new("Channel closed"))
         .and_then(|response| match response {
             Message::DebugClientTunnel(DebugClientTunnelMessage::ConnectDebugTunnelResponse {
                 result,
-            }) => result.map_err(|e| anyhow::anyhow!(e)),
-            _ => Err(anyhow::anyhow!("Unexpected message type")),
+            }) => result.map_err(|e| TError::new(&e.to_string())),
+            _ => Err(TError::new("Unexpected message type")),
         })?;
 
     Ok(())
@@ -110,7 +111,7 @@ async fn connect_debug_tunnel(
 async fn connect_ssh_session(
     channel_tx: ChannelSender,
     channel_rx: ChannelReceiver,
-) -> anyhow::Result<russh::client::Handle<ClientHandler>> {
+) -> Result<russh::client::Handle<ClientHandler>, TError> {
     let config = Arc::new(russh::client::Config::default());
     let stream = combine_into_byte_stream(channel_tx, channel_rx);
     let client_handler = ClientHandler;
@@ -121,12 +122,12 @@ async fn connect_ssh_session(
 #[tracing::instrument(skip_all)]
 async fn authenticate_ssh_session(
     session_handle: &mut russh::client::Handle<ClientHandler>,
-) -> anyhow::Result<()> {
+) -> Result<(), TError> {
     let auth_result = session_handle
         .authenticate_none("muzanci-debug-client-tunnel")
         .await?;
     if !auth_result.success() {
-        anyhow::bail!("Authentication failed");
+        return Err(TError::new(&format!("Authentication failed")));
     }
     Ok(())
 }

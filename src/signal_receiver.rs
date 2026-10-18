@@ -5,7 +5,7 @@ use tokio::signal::unix::SignalKind;
 use tokio::signal::unix::signal;
 use tokio_util::sync::CancellationToken;
 
-use crate::error::TError;
+use muzanci_observability::TError;
 
 impl IntoFuture for SignalReceiverHandle {
     type Output = <tokio::task::JoinHandle<()> as IntoFuture>::Output;

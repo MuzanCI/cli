@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::path::Path;
 
+use muzanci_observability::TError;
 use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
@@ -12,7 +13,7 @@ pub struct UserConfig {
 }
 
 impl UserConfig {
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+    pub fn from_file(path: &Path) -> Result<Self, TError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -28,7 +29,7 @@ impl UserConfig {
         Ok(config)
     }
 
-    pub fn to_file(&self, path: &Path) -> anyhow::Result<()> {
+    pub fn to_file(&self, path: &Path) -> Result<(), TError> {
         let contents = toml::to_string(self)?;
         std::fs::write(path, contents)?;
         Ok(())

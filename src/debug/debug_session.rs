@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use http::Request;
 use muzanci_config::config::ServerId;
+use muzanci_observability::TError;
 use tokio_util::sync::CancellationToken;
 
 use muzanci_config::config::JobConfig;
@@ -20,7 +21,7 @@ pub async fn run_debug_session(
     secret: &str,
     account_id: Uuid,
     job: JobConfig,
-) -> anyhow::Result<()> {
+) -> Result<(), TError> {
     let remote = {
         // TODO: Refactor these to be CLI options.
         let target_dir = PathBuf::from("./.git");
@@ -73,7 +74,7 @@ pub async fn connect_debug_resolver(
     secret: &str,
     account_id: Uuid,
     cancellation_token: CancellationToken,
-) -> anyhow::Result<MuxHandle> {
+) -> Result<MuxHandle, TError> {
     let server_stream = {
         let stream = tokio::net::TcpStream::connect(hostname).await?;
         stream.set_nodelay(true)?;
@@ -103,10 +104,10 @@ pub async fn connect_debug_resolver(
     let response = send_request.send_request(request).await?;
 
     if response.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-        let e = anyhow::anyhow!(
+        let e = TError::new(&format!(
             "Failed to upgrade connection. Server responded with status: {}",
             response.status()
-        );
+        ));
         return Err(e);
     }
 
@@ -134,7 +135,7 @@ pub async fn connect_debug_client(
     account_id: Uuid,
     cancellation_token: CancellationToken,
     server_id: ServerId,
-) -> anyhow::Result<MuxHandle> {
+) -> Result<MuxHandle, TError> {
     let server_stream = {
         let stream = tokio::net::TcpStream::connect(hostname).await?;
         stream.set_nodelay(true)?;
@@ -165,10 +166,10 @@ pub async fn connect_debug_client(
     let response = send_request.send_request(request).await?;
 
     if response.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-        let e = anyhow::anyhow!(
+        let e = TError::new(&format!(
             "Failed to upgrade connection. Server responded with status: {}",
             response.status()
-        );
+        ));
         return Err(e);
     }
 

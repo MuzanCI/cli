@@ -1,5 +1,6 @@
 use muzanci_config::config::DebugClientConfig;
 use muzanci_config::config::DebugSessionId;
+use muzanci_observability::TError;
 use muzanci_transport::message::DebugResolverMessage;
 use muzanci_transport::message::Message;
 use tokio_util::sync::CancellationToken;
@@ -10,11 +11,11 @@ use muzanci_transport::channel::ChannelType;
 use muzanci_transport::mux::MuxHandle;
 
 pub struct DebugResolverHandle {
-    handle: tokio::task::JoinHandle<Result<DebugClientConfig, anyhow::Error>>,
+    handle: tokio::task::JoinHandle<Result<DebugClientConfig, TError>>,
 }
 
 impl Future for DebugResolverHandle {
-    type Output = Result<Result<DebugClientConfig, anyhow::Error>, tokio::task::JoinError>;
+    type Output = Result<Result<DebugClientConfig, TError>, tokio::task::JoinError>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -55,12 +56,12 @@ impl DebugResolver {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn run(&mut self, capacity: u64) -> anyhow::Result<DebugClientConfig> {
+    async fn run(&mut self, capacity: u64) -> Result<DebugClientConfig, TError> {
         let cancellation_token = self.cancellation_token.clone();
         tokio::select! {
             _ = cancellation_token.cancelled() => {
                 tracing::info!("DebugResolver received cancellation signal.");
-                Err(anyhow::anyhow!("Cancelled"))
+                Err(TError::new("Cancelled"))
             }
 
             result = self.main(capacity) => {
@@ -79,14 +80,14 @@ impl DebugResolver {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn main(&mut self, capacity: u64) -> anyhow::Result<DebugClientConfig> {
+    async fn main(&mut self, capacity: u64) -> Result<DebugClientConfig, TError> {
         let debug_session_id = self.create_debug_session(capacity).await?;
         let config = self.resolve_debug_client_config(debug_session_id).await?;
         Ok(config)
     }
 
     #[tracing::instrument(skip_all)]
-    async fn create_debug_session(&mut self, capacity: u64) -> anyhow::Result<DebugSessionId> {
+    async fn create_debug_session(&mut self, capacity: u64) -> Result<DebugSessionId, TError> {
         self.channel_tx
             .send(Message::DebugResolver(
                 DebugResolverMessage::CreateDebugSessionRequest { capacity },
@@ -96,12 +97,12 @@ impl DebugResolver {
         self.channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugResolver(DebugResolverMessage::CreateDebugSessionResponse {
                     result,
-                }) => result.map_err(|e| anyhow::anyhow!(e)),
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                }) => result.map_err(|e| TError::new(&e.to_string())),
+                _ => Err(TError::new("Unexpected message type")),
             })
     }
 
@@ -109,7 +110,7 @@ impl DebugResolver {
     async fn resolve_debug_client_config(
         &mut self,
         debug_session_id: DebugSessionId,
-    ) -> anyhow::Result<DebugClientConfig> {
+    ) -> Result<DebugClientConfig, TError> {
         self.channel_tx
             .send(Message::DebugResolver(
                 DebugResolverMessage::ResolveDebugClientConfigRequest { debug_session_id },
@@ -119,12 +120,12 @@ impl DebugResolver {
         self.channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugResolver(
                     DebugResolverMessage::ResolveDebugClientConfigResponse { result },
-                ) => result.map_err(|e| anyhow::anyhow!(e)),
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                ) => result.map_err(|e| TError::new(&e.to_string())),
+                _ => Err(TError::new("Unexpected message type")),
             })
     }
 }

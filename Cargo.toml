@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
 git2 = "0.21.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -33,6 +32,7 @@ nix = { version = "0.31.3", features = ["fs", "term"] }
 tempfile = "3.27.0"
 sha2 = "0.11.0"
 hex = "0.4.3"
+muzanci-observability = { path = "../muzanci-observability" }
 toml = "1.1.6"
 uuid = "1.26.1"
 rpassword = "7.5.4"

@@ -1,3 +1,4 @@
+use muzanci_observability::TError;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::Write;
@@ -8,7 +9,7 @@ pub enum Intent {
     Debug,
 }
 
-pub fn prompt_login(intent: Intent) -> anyhow::Result<String> {
+pub fn prompt_login(intent: Intent) -> Result<String, TError> {
     // TODO: Parameterize url
     let url = "https://papaya-repeal-curvature.ngrok-free.dev/personal_access_tokens";
 
@@ -43,7 +44,7 @@ pub struct Account {
     pub name: String,
 }
 
-pub async fn prompt_account_selection(secret: &str) -> anyhow::Result<Uuid> {
+pub async fn prompt_account_selection(secret: &str) -> Result<Uuid, TError> {
     let url = "https://papaya-repeal-curvature.ngrok-free.dev/cli_accounts";
     let response = reqwest::Client::new()
         .get(url)
@@ -54,13 +55,13 @@ pub async fn prompt_account_selection(secret: &str) -> anyhow::Result<Uuid> {
 
     if !response.status().is_success() {
         let body = response.text().await?;
-        anyhow::bail!("failed to fetch accounts: {body}");
+        return Err(TError::new(&format!("failed to fetch accounts: {body}")));
     }
 
     let accounts = response.json::<AccountsResponse>().await?.accounts;
 
     if accounts.is_empty() {
-        anyhow::bail!("no accounts found");
+        return Err(TError::new(&format!("no accounts found")));
     }
 
     if accounts.len() == 1 {
@@ -82,7 +83,7 @@ pub async fn prompt_account_selection(secret: &str) -> anyhow::Result<Uuid> {
     let choice: usize = input.trim().parse()?;
 
     if choice < 1 || choice > accounts.len() {
-        anyhow::bail!("invalid choice: {choice}");
+        return Err(TError::new(&format!("invalid choice: {choice}")));
     }
 
     let account_id = accounts[choice - 1].account_id;

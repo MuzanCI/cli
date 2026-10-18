@@ -5,6 +5,7 @@ use clap::ValueEnum;
 use muzanci_config::collector::Collector;
 use muzanci_config::config::Config;
 use muzanci_git::GitClient;
+use muzanci_observability::TError;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -13,8 +14,6 @@ use tokio_util::sync::CancellationToken;
 use muzanci_config::collector::Env;
 
 mod debug;
-mod error;
-mod logging;
 mod prompt;
 mod signal_receiver;
 mod ssh;
@@ -39,7 +38,7 @@ pub struct CliCommand {
 }
 
 impl CliCommand {
-    pub fn run(self) -> anyhow::Result<()> {
+    pub fn run(self) -> Result<(), TError> {
         match self.subcommand {
             CliSubcommand::Show(args) => run_show(args),
             CliSubcommand::Check(args) => run_check(args),
@@ -135,12 +134,12 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
     Ok((key.to_string(), value.to_string()))
 }
 
-fn parse_env(env: Vec<(String, String)>) -> anyhow::Result<Env> {
+fn parse_env(env: Vec<(String, String)>) -> Result<Env, TError> {
     let mut env = env
         .into_iter()
         .try_fold(Env::new(), |mut acc, (key, value)| {
             if acc.contains_key(&key) {
-                anyhow::bail!("Duplicate env key [{key}]");
+                return Err(TError::new(&format!("Duplicate env key [{key}]")));
             }
             acc.insert(key, value);
             Ok(acc)
@@ -159,7 +158,7 @@ fn parse_env(env: Vec<(String, String)>) -> anyhow::Result<Env> {
     Ok(env)
 }
 
-fn run_show(args: ShowArgs) -> anyhow::Result<()> {
+fn run_show(args: ShowArgs) -> Result<(), TError> {
     let ShowArgs { input, format, env } = args;
 
     let env = parse_env(env)?;
@@ -177,7 +176,7 @@ fn run_show(args: ShowArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_check(args: CheckArgs) -> anyhow::Result<()> {
+fn run_check(args: CheckArgs) -> Result<(), TError> {
     let CheckArgs { input, env } = args;
 
     let env = parse_env(env)?;
@@ -191,8 +190,9 @@ fn run_check(args: CheckArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_debug(args: DebugArgs) -> anyhow::Result<()> {
-    let _logger_guard = logging::init().unwrap();
+fn run_debug(args: DebugArgs) -> Result<(), TError> {
+    let _logger_guard = muzanci_observability::init_tracing().unwrap();
+
     let DebugArgs { input, job, env } = args;
 
     let env = parse_env(env)?;
@@ -201,13 +201,13 @@ fn run_debug(args: DebugArgs) -> anyhow::Result<()> {
 
     collector
         .evaluate(&input)
-        .map_err(|e| anyhow::anyhow!("failed to evaluate {}:\n{}", input.display(), e))?;
+        .map_err(|e| TError::new(&format!("failed to evaluate {}:\n{}", input.display(), e)))?;
 
     let job = collector
         .jobs()
         .into_iter()
         .find(|j| j.name == job)
-        .ok_or_else(|| anyhow::anyhow!("job not found: {job}"))?;
+        .ok_or_else(|| TError::new(&format!("job not found: {job}")))?;
 
     println!("Found job: {}", job.name);
     println!("Job steps:");

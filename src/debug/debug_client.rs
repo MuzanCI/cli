@@ -5,6 +5,7 @@ use muzanci_config::config::JobConfig;
 use muzanci_config::config::StepConfig;
 use muzanci_git::GitClient;
 use muzanci_git::GitRemote;
+use muzanci_observability::TError;
 use muzanci_transport::message::DebugClientMessage;
 use muzanci_transport::message::Message;
 use sha2::Digest;
@@ -87,7 +88,7 @@ impl DebugClient {
         self,
         channel_rx: ChannelReceiver,
         channel_closed: CancellationToken,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), TError> {
         let cancellation_token = self.cancellation_token.clone();
         tokio::select! {
             _ = cancellation_token.cancelled() => {
@@ -115,7 +116,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn main(mut self, mut channel_rx: ChannelReceiver) -> anyhow::Result<()> {
+    async fn main(mut self, mut channel_rx: ChannelReceiver) -> Result<(), TError> {
         self.connect_debug_client(&mut channel_rx).await?;
         self.create_sandbox(&mut channel_rx, self.job.image.clone())
             .await?;
@@ -131,7 +132,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn connect_debug_client(&self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
+    async fn connect_debug_client(&self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::ConnectDebugClientRequest {
@@ -143,12 +144,12 @@ impl DebugClient {
         channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugClient(DebugClientMessage::ConnectDebugClientResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
+                    result.map_err(|e| TError::new(&e.to_string()))
                 }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                _ => Err(TError::new("Unexpected message type")),
             })
     }
 
@@ -157,7 +158,7 @@ impl DebugClient {
         &self,
         channel_rx: &mut ChannelReceiver,
         image: ImageConfig,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), TError> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::CreateSandboxRequest { image },
@@ -167,17 +168,17 @@ impl DebugClient {
         channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugClient(DebugClientMessage::CreateSandboxResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
+                    result.map_err(|e| TError::new(&e.to_string()))
                 }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                _ => Err(TError::new("Unexpected message type")),
             })
     }
 
     #[tracing::instrument(skip_all)]
-    async fn checkout_branch(&self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
+    async fn checkout_branch(&self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::CheckoutBranchRequest {
@@ -190,17 +191,17 @@ impl DebugClient {
         channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugClient(DebugClientMessage::CheckoutBranchResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
+                    result.map_err(|e| TError::new(&e.to_string()))
                 }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                _ => Err(TError::new("Unexpected message type")),
             })
     }
 
     #[tracing::instrument(skip_all)]
-    async fn create_diff(&mut self) -> anyhow::Result<()> {
+    async fn create_diff(&mut self) -> Result<(), TError> {
         let mut diff_file = tempfile::NamedTempFile::new()?;
         let git_client = GitClient::try_default()?;
         let target_dir = PathBuf::from("./.git");
@@ -210,7 +211,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn start_diff_upload(&mut self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
+    async fn start_diff_upload(&mut self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
         self.diff_hasher = Some(Sha256::new());
 
         self.channel_tx
@@ -222,22 +223,22 @@ impl DebugClient {
         channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugClient(DebugClientMessage::StartDiffUploadResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
+                    result.map_err(|e| TError::new(&e.to_string()))
                 }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                _ => Err(TError::new("Unexpected message type")),
             })
     }
 
     #[tracing::instrument(skip_all)]
-    async fn send_diff(&mut self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
+    async fn send_diff(&mut self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
         let diff_file = {
             let file = self
                 .diff_file
                 .as_ref()
-                .ok_or(anyhow::anyhow!("No diff file"))?;
+                .ok_or_else(|| TError::new("No diff file"))?;
             tokio::fs::File::from_std(file.reopen()?)
         };
 
@@ -254,7 +255,7 @@ impl DebugClient {
                 let hasher = self
                     .diff_hasher
                     .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("No diff hasher"))?;
+                    .ok_or_else(|| TError::new("No diff hasher"))?;
                 hasher.update(buffer);
             }
 
@@ -268,12 +269,12 @@ impl DebugClient {
             channel_rx
                 .recv()
                 .await
-                .ok_or(anyhow::anyhow!("Channel closed"))
+                .ok_or_else(|| TError::new("Channel closed"))
                 .and_then(|response| match response {
                     Message::DebugClient(DebugClientMessage::UploadDiffChunkResponse {
                         result,
-                    }) => result.map_err(|e| anyhow::anyhow!(e)),
-                    _ => Err(anyhow::anyhow!("Unexpected message type")),
+                    }) => result.map_err(|e| TError::new(&e.to_string())),
+                    _ => Err(TError::new("Unexpected message type")),
                 })?;
 
             reader.consume(n);
@@ -286,12 +287,12 @@ impl DebugClient {
     async fn complete_diff_upload(
         &mut self,
         channel_rx: &mut ChannelReceiver,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), TError> {
         let checksum = {
             let diff_hasher = self
                 .diff_hasher
                 .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("No diff hasher"))?;
+                .ok_or_else(|| TError::new("No diff hasher"))?;
             hex::encode(diff_hasher.finalize_reset())
         };
 
@@ -306,17 +307,17 @@ impl DebugClient {
         channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugClient(DebugClientMessage::CompleteDiffUploadResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
+                    result.map_err(|e| TError::new(&e.to_string()))
                 }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                _ => Err(TError::new("Unexpected message type")),
             })
     }
 
     #[tracing::instrument(skip_all)]
-    async fn apply_diff(&self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
+    async fn apply_diff(&self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
         self.channel_tx
             .send(Message::DebugClient(DebugClientMessage::ApplyDiffRequest))
             .await?;
@@ -324,17 +325,17 @@ impl DebugClient {
         channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugClient(DebugClientMessage::ApplyDiffResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
+                    result.map_err(|e| TError::new(&e.to_string()))
                 }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                _ => Err(TError::new("Unexpected message type")),
             })
     }
 
     #[tracing::instrument(skip_all)]
-    async fn debugger_control(&self, channel_rx: &mut ChannelReceiver) -> anyhow::Result<()> {
+    async fn debugger_control(&self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
         let mut stdin = StdinStream::new(self.cancellation_token.clone());
 
         let mut current_step: usize = 0;
@@ -487,7 +488,7 @@ impl DebugClient {
         &self,
         channel_rx: &mut ChannelReceiver,
         step: StepConfig,
-    ) -> anyhow::Result<u32> {
+    ) -> Result<u32, TError> {
         let cmd = step.command.clone();
 
         self.channel_tx
@@ -498,12 +499,12 @@ impl DebugClient {
         channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugClient(DebugClientMessage::StartShellResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
+                    result.map_err(|e| TError::new(&e.to_string()))
                 }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                _ => Err(TError::new("Unexpected message type")),
             })?;
 
         tunnel_exec(&cmd, self.mux_handle.clone(), self.debug_session_id).await
@@ -515,7 +516,7 @@ impl DebugClient {
         channel_rx: &mut ChannelReceiver,
         stdin: &mut StdinStream,
         step: StepConfig,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), TError> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::StartShellRequest { step },
@@ -524,12 +525,12 @@ impl DebugClient {
         channel_rx
             .recv()
             .await
-            .ok_or(anyhow::anyhow!("Channel closed"))
+            .ok_or_else(|| TError::new("Channel closed"))
             .and_then(|response| match response {
                 Message::DebugClient(DebugClientMessage::StartShellResponse { result }) => {
-                    result.map_err(|e| anyhow::anyhow!(e))
+                    result.map_err(|e| TError::new(&e.to_string()))
                 }
-                _ => Err(anyhow::anyhow!("Unexpected message type")),
+                _ => Err(TError::new("Unexpected message type")),
             })?;
 
         tunnel_interactive(stdin, self.mux_handle.clone(), self.debug_session_id).await
