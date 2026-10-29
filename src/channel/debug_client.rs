@@ -21,8 +21,8 @@ use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::ChannelType;
 use muzanci_transport::mux::MuxHandle;
 
-use crate::debug::debug_client_tunnel::tunnel_exec;
-use crate::debug::debug_client_tunnel::tunnel_interactive;
+use crate::channel::debug_client_tunnel::tunnel_exec;
+use crate::channel::debug_client_tunnel::tunnel_interactive;
 use crate::stdin::StdinStream;
 
 pub struct DebugClientHandle {

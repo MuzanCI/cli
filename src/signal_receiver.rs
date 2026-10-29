@@ -1,26 +1,12 @@
-use std::future::IntoFuture;
-use tokio::task::JoinHandle;
-
+use std::sync::Arc;
 use tokio::signal::unix::SignalKind;
 use tokio::signal::unix::signal;
-use tokio_util::sync::CancellationToken;
+use tokio::task::AbortHandle;
 
 use muzanci_observability::TError;
-
-impl IntoFuture for SignalReceiverHandle {
-    type Output = <tokio::task::JoinHandle<()> as IntoFuture>::Output;
-    type IntoFuture = tokio::task::JoinHandle<()>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        self.handle
-    }
-}
-
-pub struct SignalReceiverHandle {
-    handle: JoinHandle<()>,
-}
-
-pub struct SignalReceiver;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SignalReceiverError {
@@ -31,66 +17,81 @@ pub enum SignalReceiverError {
     SigtermInstallFailed(#[source] std::io::Error),
 }
 
+pub struct SignalReceiver {
+    debug_session_shutdown: CancellationToken,
+}
+
 impl SignalReceiver {
-    pub fn spawn(cancellation_token: CancellationToken) -> SignalReceiverHandle {
-        let handle = tokio::spawn(async move {
-            SignalReceiver.run(cancellation_token).await.unwrap();
-        });
-        SignalReceiverHandle { handle }
+    pub fn spawn(
+        join_set: &mut JoinSet<Result<(), TError>>,
+        debug_session_shutdown: CancellationToken,
+    ) -> AbortHandle {
+        join_set.spawn(async move {
+            SignalReceiver {
+                debug_session_shutdown,
+            }
+            .main()
+            .await
+        })
     }
 
-    #[tracing::instrument(skip_all)]
-    async fn run(self, cancellation_token: CancellationToken) -> Result<(), TError> {
-        tracing::info!("starting main...");
-        let cancellation_token_clone = cancellation_token.clone();
+    #[tracing::instrument(
+        skip_all,
+        name = "signal_receiver"
+        fields(
+            id = Uuid::now_v7().to_string(),
+            debug_session_id = "TODO",
+        )
+    )]
+    async fn main(mut self) -> Result<(), TError> {
+        tracing::info!("signal_receiver.started");
+
+        let debug_session_shutdown = self.debug_session_shutdown.clone();
+
         tokio::select! {
-            _ = cancellation_token_clone.cancelled() => {
-                tracing::info!("SignalReceiver received cancellation signal.");
-                Ok(())
+            _ = debug_session_shutdown.cancelled() => {
+                tracing::info!("SignalReceiver received runner shutdown signal.");
             }
-            result = self.main(cancellation_token) => {
-                match result {
-                    Ok(_) => {
-                        tracing::info!("SignalReceiver finished running");
-                        Ok(())
-                    }
-                    Err(e) => {
-                        tracing::error!("SignalReceiver encountered an error: {:?}", e);
-                        Err(e)
-                    }
-                }
+            result = self.run() => {
+                result?
             }
         }
+
+        tracing::info!("signal_receiver.finished");
+
+        Ok(())
     }
 
     #[tracing::instrument(skip_all)]
-    async fn main(self, cancellation_token: CancellationToken) -> Result<(), TError> {
+    async fn run(&mut self) -> Result<(), TError> {
+        let debug_session_shutdown = self.debug_session_shutdown.clone();
+
         let mut sigint = match signal(SignalKind::interrupt()) {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!("failed to install SIGINT handler: {e}");
-                cancellation_token.cancel();
-                Err(SignalReceiverError::SigintInstallFailed(e))?
+                debug_session_shutdown.cancel();
+                let e = SignalReceiverError::SigintInstallFailed(e);
+                return Err(e.into());
             }
         };
 
         let mut sigterm = match signal(SignalKind::terminate()) {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!("failed to install SIGTERM handler: {e}");
-                cancellation_token.cancel();
-                Err(SignalReceiverError::SigtermInstallFailed(e))?
+                debug_session_shutdown.cancel();
+                let e = SignalReceiverError::SigtermInstallFailed(e);
+                return Err(e.into());
             }
         };
 
         tokio::select! {
             _ = sigint.recv() => {
-                tracing::warn!("SIGINT received, shutting down...");
-                cancellation_token.cancel();
+                tracing::warn!("SIGINT received, shutting down runner...");
+                debug_session_shutdown.cancel();
             }
             _ = sigterm.recv() => {
-                tracing::warn!("SIGTERM received, shutting down...");
-                cancellation_token.cancel();
+                tracing::warn!("SIGTERM received, shutting down runner...");
+                debug_session_shutdown.cancel();
             }
         }
 

@@ -61,7 +61,7 @@ pub async fn prompt_account_selection(secret: &str) -> Result<Uuid, TError> {
     let accounts = response.json::<AccountsResponse>().await?.accounts;
 
     if accounts.is_empty() {
-        return Err(TError::new(&format!("no accounts found")));
+        return Err(TError::new("no accounts found"));
     }
 
     if accounts.len() == 1 {

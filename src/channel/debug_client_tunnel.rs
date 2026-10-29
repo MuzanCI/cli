@@ -11,9 +11,9 @@ use muzanci_config::config::DebugSessionId;
 use muzanci_transport::channel::ChannelType;
 use muzanci_transport::mux::MuxHandle;
 
-use crate::ssh::client::ClientHandler;
-use crate::ssh::client::run_exec_shell;
-use crate::ssh::client::run_interactive_shell;
+use crate::ssh_client_handler::ClientHandler;
+use crate::ssh_client_handler::run_exec_shell;
+use crate::ssh_client_handler::run_interactive_shell;
 use crate::stdin::StdinStream;
 
 #[tracing::instrument(skip_all)]

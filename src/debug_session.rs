@@ -7,14 +7,14 @@ use tokio_util::sync::CancellationToken;
 
 use muzanci_config::config::JobConfig;
 use muzanci_git::GitClient;
-use muzanci_transport::MUZANCI_TRANSPORT_V1;
 use muzanci_transport::channel::FnChannelAcceptor;
+use muzanci_transport::http::MUZANCI_TRANSPORT_V1;
 use muzanci_transport::mux::Mux;
 use muzanci_transport::mux::MuxHandle;
 use uuid::Uuid;
 
-use crate::debug::debug_client::DebugClient;
-use crate::debug::debug_resolver::DebugResolver;
+use crate::channel::debug_client::DebugClient;
+use crate::channel::debug_resolver::DebugResolver;
 
 pub async fn run_debug_session(
     cancellation_token: CancellationToken,

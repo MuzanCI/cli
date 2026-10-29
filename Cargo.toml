@@ -36,6 +36,7 @@ muzanci-observability = { path = "../muzanci-observability" }
 toml = "1.1.6"
 uuid = "1.26.1"
 rpassword = "7.5.4"
+directories = "6.0.0"
 
 [lib]
 name = "muzanci_cli"

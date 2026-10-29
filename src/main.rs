@@ -1,9 +1,10 @@
 use clap::Parser;
 use muzanci_cli::CliCommand;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let command = CliCommand::parse();
-    if let Err(err) = command.run() {
+    if let Err(err) = command.run().await {
         eprintln!("error: {err:#}");
         std::process::exit(1);
     }
