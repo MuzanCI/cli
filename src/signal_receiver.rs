@@ -1,12 +1,15 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+use uuid::Uuid;
+
 use tokio::signal::unix::SignalKind;
 use tokio::signal::unix::signal;
 use tokio::task::AbortHandle;
 
-use muzanci_observability::TError;
-use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
+
+use muzanci_observability::TError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SignalReceiverError {
@@ -19,20 +22,23 @@ pub enum SignalReceiverError {
 
 pub struct SignalReceiver {
     debug_session_shutdown: CancellationToken,
+    enabled: Arc<AtomicBool>,
 }
 
 impl SignalReceiver {
     pub fn spawn(
-        join_set: &mut JoinSet<Result<(), TError>>,
         debug_session_shutdown: CancellationToken,
+        enabled: Arc<AtomicBool>,
     ) -> AbortHandle {
-        join_set.spawn(async move {
+        tokio::spawn(async move {
             SignalReceiver {
                 debug_session_shutdown,
+                enabled,
             }
             .main()
             .await
         })
+        .abort_handle()
     }
 
     #[tracing::instrument(
@@ -84,14 +90,19 @@ impl SignalReceiver {
             }
         };
 
-        tokio::select! {
-            _ = sigint.recv() => {
-                tracing::warn!("SIGINT received, shutting down runner...");
-                debug_session_shutdown.cancel();
+        loop {
+            tokio::select! {
+                _ = sigint.recv() => {
+                    tracing::warn!("SIGINT received, shutting down runner...");
+                }
+                _ = sigterm.recv() => {
+                    tracing::warn!("SIGTERM received, shutting down runner...");
+                }
             }
-            _ = sigterm.recv() => {
-                tracing::warn!("SIGTERM received, shutting down runner...");
+
+            if self.enabled.load(std::sync::atomic::Ordering::Relaxed) {
                 debug_session_shutdown.cancel();
+                break;
             }
         }
 

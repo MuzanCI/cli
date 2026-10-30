@@ -1,12 +1,12 @@
+use directories::ProjectDirs;
+use serde::Deserialize;
+use serde::Serialize;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 
-use directories::ProjectDirs;
 use muzanci_observability::TError;
-use serde::Deserialize;
-use serde::Serialize;
-use uuid::Uuid;
+use muzanci_transport::message::AccountId;
 
 pub struct UserConfig {
     path: PathBuf,
@@ -16,7 +16,7 @@ pub struct UserConfig {
 #[derive(Serialize, Deserialize)]
 pub struct UserConfigFields {
     pub personal_access_token_secret: Option<String>,
-    pub account_id: Option<Uuid>,
+    pub account_id: Option<AccountId>,
     pub disable_telemetry: Option<bool>,
 }
 

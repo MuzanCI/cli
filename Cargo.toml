@@ -37,6 +37,7 @@ toml = "1.1.6"
 uuid = "1.26.1"
 rpassword = "7.5.4"
 directories = "6.0.0"
+serde_json = "1.0.154"
 
 [lib]
 name = "muzanci_cli"

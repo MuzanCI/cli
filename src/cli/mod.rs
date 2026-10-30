@@ -7,12 +7,13 @@ use std::path::PathBuf;
 use crate::cli::check_subcommand::CheckSubcommand;
 use crate::cli::debug_subcommand::DebugSubcommand;
 use crate::cli::show_subcommand::ShowSubcommand;
-use crate::user_config::UserConfig;
+use crate::cli::user_config::UserConfig;
 
 mod check_subcommand;
 mod debug_subcommand;
 mod parse;
 mod show_subcommand;
+mod user_config;
 
 #[derive(Parser, Debug)]
 #[command(

@@ -1,49 +1,41 @@
+use sha2::Digest;
+use sha2::Sha256;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use tempfile::NamedTempFile;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::BufReader;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use muzanci_config::config::DebugSessionId;
+use muzanci_config::config::ImageConfig;
 use muzanci_config::config::JobConfig;
 use muzanci_config::config::StepConfig;
 use muzanci_git::GitClient;
 use muzanci_git::GitRemote;
 use muzanci_observability::TError;
-use muzanci_transport::message::DebugClientMessage;
-use muzanci_transport::message::Message;
-use sha2::Digest;
-use sha2::Sha256;
-use tempfile::NamedTempFile;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::BufReader;
-use tokio_util::sync::CancellationToken;
-
-use muzanci_config::config::ImageConfig;
 use muzanci_transport::channel::ChannelReceiver;
 use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::ChannelType;
+use muzanci_transport::message::AccountId;
+use muzanci_transport::message::DebugClientMessage;
+use muzanci_transport::message::Message;
 use muzanci_transport::mux::MuxHandle;
 
 use crate::channel::debug_client_tunnel::tunnel_exec;
 use crate::channel::debug_client_tunnel::tunnel_interactive;
 use crate::stdin::StdinStream;
 
-pub struct DebugClientHandle {
-    handle: tokio::task::JoinHandle<()>,
-}
-
-impl Future for DebugClientHandle {
-    type Output = Result<(), tokio::task::JoinError>;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::pin::Pin::new(&mut self.handle).poll(cx)
-    }
-}
-
 pub struct DebugClient {
+    client_shutdown: CancellationToken,
+    signal_receiver_enabled: Arc<AtomicBool>,
     mux_handle: MuxHandle,
-    cancellation_token: CancellationToken,
     channel_tx: ChannelSender,
+    user_id: Uuid,
+    account_id: AccountId,
     debug_session_id: DebugSessionId,
     remote: GitRemote,
     job: JobConfig,
@@ -53,70 +45,72 @@ pub struct DebugClient {
 
 impl DebugClient {
     pub fn spawn(
+        client_shutdown: CancellationToken,
+        signal_receiver_enabled: Arc<AtomicBool>,
         mux_handle: MuxHandle,
-        cancellation_token: CancellationToken,
+        user_id: Uuid,
+        account_id: AccountId,
         debug_session_id: DebugSessionId,
         remote: GitRemote,
         job: JobConfig,
-    ) -> DebugClientHandle {
-        let handle = tokio::spawn(async move {
-            tracing::info!("opening debug client channel");
-            let (channel_tx, channel_rx, channel_closed) = mux_handle
-                .open_channel(ChannelType::DebugClient)
-                .await
-                .unwrap();
-            tracing::info!("running debug client actor");
+    ) -> JoinHandle<Result<(), TError>> {
+        tokio::spawn(async move {
+            let (channel_tx, channel_rx, channel_closed) =
+                mux_handle.open_channel(ChannelType::DebugClient).await?;
+
             DebugClient {
+                client_shutdown,
+                signal_receiver_enabled,
                 mux_handle,
-                cancellation_token,
                 channel_tx,
+                user_id,
+                account_id,
                 debug_session_id,
                 remote,
                 job,
                 diff_file: None,
                 diff_hasher: None,
             }
-            .run(channel_rx, channel_closed)
+            .main(channel_rx, channel_closed)
             .await
-            .unwrap();
-        });
-        DebugClientHandle { handle }
+        })
     }
 
-    #[tracing::instrument(skip_all)]
-    async fn run(
-        self,
+    #[tracing::instrument(
+        skip_all,
+        name = "debug_client",
+        fields(
+            id = Uuid::now_v7().to_string(),
+            user_id = self.user_id.to_string(),
+            account_id = self.account_id.to_string(),
+            debug_session_id = self.debug_session_id.to_string(),
+        )
+    )]
+    async fn main(
+        mut self,
         channel_rx: ChannelReceiver,
         channel_closed: CancellationToken,
     ) -> Result<(), TError> {
-        let cancellation_token = self.cancellation_token.clone();
+        let client_shutdown = self.client_shutdown.clone();
         tokio::select! {
-            _ = cancellation_token.cancelled() => {
-                tracing::info!("DebugClient received cancellation signal.");
-                Ok(())
+            _ = client_shutdown.cancelled() => {
+                tracing::info!("received client shutdown signal.");
             }
 
             _ = channel_closed.cancelled() => {
                 tracing::info!("DebugClient channel closed. Stopping DebugClient task.");
-                Ok(())
             }
 
-            result = self.main(channel_rx) => {
-                match result {
-                    Ok(_) => {
-                        tracing::info!("DebugClient finished running.");
-                    }
-                    Err(e) => {
-                        tracing::error!("DebugClient encountered an error: {:?}", e);
-                    }
-                }
-                Ok(())
+            result = self.run(channel_rx) => {
+                result?;
             }
         }
+
+        Ok(())
     }
 
     #[tracing::instrument(skip_all)]
-    async fn main(mut self, mut channel_rx: ChannelReceiver) -> Result<(), TError> {
+    async fn run(&mut self, mut channel_rx: ChannelReceiver) -> Result<(), TError> {
         self.connect_debug_client(&mut channel_rx).await?;
         self.create_sandbox(&mut channel_rx, self.job.image.clone())
             .await?;
@@ -132,7 +126,10 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn connect_debug_client(&self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
+    async fn connect_debug_client(
+        &mut self,
+        channel_rx: &mut ChannelReceiver,
+    ) -> Result<(), TError> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::ConnectDebugClientRequest {
@@ -155,7 +152,7 @@ impl DebugClient {
 
     #[tracing::instrument(skip_all)]
     async fn create_sandbox(
-        &self,
+        &mut self,
         channel_rx: &mut ChannelReceiver,
         image: ImageConfig,
     ) -> Result<(), TError> {
@@ -178,7 +175,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn checkout_branch(&self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
+    async fn checkout_branch(&mut self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::CheckoutBranchRequest {
@@ -296,8 +293,6 @@ impl DebugClient {
             hex::encode(diff_hasher.finalize_reset())
         };
 
-        tracing::info!("Diff checksum [{}]", checksum);
-
         self.channel_tx
             .send(Message::DebugClient(
                 DebugClientMessage::CompleteDiffUploadRequest { checksum },
@@ -317,7 +312,7 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn apply_diff(&self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
+    async fn apply_diff(&mut self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
         self.channel_tx
             .send(Message::DebugClient(DebugClientMessage::ApplyDiffRequest))
             .await?;
@@ -335,8 +330,8 @@ impl DebugClient {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn debugger_control(&self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
-        let mut stdin = StdinStream::new(self.cancellation_token.clone());
+    async fn debugger_control(&mut self, channel_rx: &mut ChannelReceiver) -> Result<(), TError> {
+        let mut stdin = StdinStream::new(self.client_shutdown.clone());
 
         let mut current_step: usize = 0;
         let mut step_success: Vec<Option<bool>> = vec![None; self.job.steps.len()];
@@ -369,9 +364,7 @@ impl DebugClient {
             std::io::stdout().flush()?;
 
             // read user input line
-            tracing::info!("input.clear");
             let line = stdin.read_line().await?;
-            tracing::info!("stdin.read_line: [{}]", line);
 
             // parse into command
             let mut parts = line.split_whitespace();
@@ -485,7 +478,7 @@ impl DebugClient {
 
     #[tracing::instrument(skip_all)]
     async fn debugger_execute_step(
-        &self,
+        &mut self,
         channel_rx: &mut ChannelReceiver,
         step: StepConfig,
     ) -> Result<u32, TError> {
@@ -496,6 +489,7 @@ impl DebugClient {
                 DebugClientMessage::StartShellRequest { step },
             ))
             .await?;
+
         channel_rx
             .recv()
             .await
@@ -507,12 +501,20 @@ impl DebugClient {
                 _ => Err(TError::new("Unexpected message type")),
             })?;
 
-        tunnel_exec(&cmd, self.mux_handle.clone(), self.debug_session_id).await
+        tunnel_exec(
+            self.signal_receiver_enabled.clone(),
+            &cmd,
+            self.mux_handle.clone(),
+            self.user_id,
+            self.account_id,
+            self.debug_session_id,
+        )
+        .await
     }
 
     #[tracing::instrument(skip_all)]
     async fn debugger_ssh_step(
-        &self,
+        &mut self,
         channel_rx: &mut ChannelReceiver,
         stdin: &mut StdinStream,
         step: StepConfig,
@@ -522,6 +524,7 @@ impl DebugClient {
                 DebugClientMessage::StartShellRequest { step },
             ))
             .await?;
+
         channel_rx
             .recv()
             .await
@@ -533,7 +536,15 @@ impl DebugClient {
                 _ => Err(TError::new("Unexpected message type")),
             })?;
 
-        tunnel_interactive(stdin, self.mux_handle.clone(), self.debug_session_id).await
+        tunnel_interactive(
+            self.signal_receiver_enabled.clone(),
+            stdin,
+            self.mux_handle.clone(),
+            self.user_id,
+            self.account_id,
+            self.debug_session_id,
+        )
+        .await
     }
 }
 

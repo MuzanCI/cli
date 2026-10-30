@@ -10,16 +10,15 @@ pub struct StdinStream {
 }
 
 impl StdinStream {
-    pub fn new(cancellation_token: CancellationToken) -> Self {
+    pub fn new(client_shutdown: CancellationToken) -> Self {
         let (tx, rx) = mpsc::channel(32);
 
-        // Long-lived background task running for the entire application duration
         tokio::spawn(async move {
-            let mut stdin = tokio::io::stdin(); // NOTE: No BufReader!
+            let mut stdin = tokio::io::stdin();
             let mut buf = [0u8; 1024];
             loop {
                 tokio::select! {
-                    _ = cancellation_token.cancelled() => break,
+                    _ = client_shutdown.cancelled() => break,
                     result = stdin.read(&mut buf) => {
                         match result {
                             Ok(n) => {
@@ -40,16 +39,15 @@ impl StdinStream {
         }
     }
 
-    /// Read raw bytes for the interactive SSH shell
     pub async fn recv_raw(&mut self) -> Option<Vec<u8>> {
         // Drain any leftover buffered bytes first
         if !self.buffer.is_empty() {
             return Some(std::mem::take(&mut self.buffer));
         }
+
         self.rx.recv().await
     }
 
-    /// Read a line-buffered String for the parent CLI task
     pub async fn read_line(&mut self) -> io::Result<String> {
         loop {
             // Check if we already have a full line in our remainder buffer

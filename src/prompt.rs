@@ -1,8 +1,8 @@
 use muzanci_observability::TError;
+use muzanci_transport::message::AccountId;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::Write;
-use uuid::Uuid;
 
 pub enum Intent {
     Login,
@@ -40,11 +40,11 @@ pub struct AccountsResponse {
 
 #[derive(Serialize, Deserialize)]
 pub struct Account {
-    pub account_id: Uuid,
+    pub account_id: AccountId,
     pub name: String,
 }
 
-pub async fn prompt_account_selection(secret: &str) -> Result<Uuid, TError> {
+pub async fn prompt_account_selection(secret: &str) -> Result<AccountId, TError> {
     let url = "https://papaya-repeal-curvature.ngrok-free.dev/cli_accounts";
     let response = reqwest::Client::new()
         .get(url)

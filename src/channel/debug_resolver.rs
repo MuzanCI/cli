@@ -1,70 +1,74 @@
+use muzanci_transport::message::AccountId;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
 use muzanci_config::config::DebugClientConfig;
 use muzanci_config::config::DebugSessionId;
 use muzanci_observability::TError;
-use muzanci_transport::message::DebugResolverMessage;
-use muzanci_transport::message::Message;
-use tokio_util::sync::CancellationToken;
-
 use muzanci_transport::channel::ChannelReceiver;
 use muzanci_transport::channel::ChannelSender;
 use muzanci_transport::channel::ChannelType;
+use muzanci_transport::message::DebugResolverMessage;
+use muzanci_transport::message::Message;
 use muzanci_transport::mux::MuxHandle;
 
-pub struct DebugResolverHandle {
-    handle: tokio::task::JoinHandle<Result<DebugClientConfig, TError>>,
-}
-
-impl Future for DebugResolverHandle {
-    type Output = Result<Result<DebugClientConfig, TError>, tokio::task::JoinError>;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::pin::Pin::new(&mut self.handle).poll(cx)
-    }
-}
-
 pub struct DebugResolver {
-    cancellation_token: CancellationToken,
+    client_shutdown: CancellationToken,
     channel_tx: ChannelSender,
     channel_rx: ChannelReceiver,
 }
 
 impl DebugResolver {
     pub fn spawn(
+        client_shutdown: CancellationToken,
         mux_handle: MuxHandle,
-        cancellation_token: CancellationToken,
+        user_id: Uuid,
+        account_id: AccountId,
         capacity: u64,
-    ) -> DebugResolverHandle {
-        let handle = tokio::spawn(async move {
-            tracing::info!("opening debug client channel");
-            let (channel_tx, channel_rx, _notify) = mux_handle
-                .open_channel(ChannelType::DebugResolver)
-                .await
-                .unwrap();
-            tracing::info!("running debug client actor");
+    ) -> JoinHandle<Result<DebugClientConfig, TError>> {
+        tokio::spawn(async move {
+            let (channel_tx, channel_rx, channel_closed) =
+                mux_handle.open_channel(ChannelType::DebugResolver).await?;
+
             DebugResolver {
-                cancellation_token,
+                client_shutdown,
                 channel_tx,
                 channel_rx,
             }
-            .run(capacity)
+            .main(channel_closed, user_id, account_id, capacity)
             .await
-        });
-        DebugResolverHandle { handle }
+        })
     }
 
-    #[tracing::instrument(skip_all)]
-    async fn run(&mut self, capacity: u64) -> Result<DebugClientConfig, TError> {
-        let cancellation_token = self.cancellation_token.clone();
+    #[tracing::instrument(
+        skip_all,
+        name = "debug_resolver",
+        fields(
+            id = Uuid::now_v7().to_string(),
+            user_id = user_id.to_string(),
+            account_id = account_id.to_string(),
+        )
+    )]
+    async fn main(
+        mut self,
+        channel_closed: CancellationToken,
+        user_id: Uuid,
+        account_id: AccountId,
+        capacity: u64,
+    ) -> Result<DebugClientConfig, TError> {
+        let client_shutdown = self.client_shutdown.clone();
         tokio::select! {
-            _ = cancellation_token.cancelled() => {
-                tracing::info!("DebugResolver received cancellation signal.");
-                Err(TError::new("Cancelled"))
+            biased;
+            _ = client_shutdown.cancelled() => {
+                Err(TError::new("DebugResolver client shutdown before completion."))
             }
 
-            result = self.main(capacity) => {
+            _ = channel_closed.cancelled() => {
+                Err(TError::new("DebugResolver channel closed before completion."))
+            }
+
+            result = self.run(capacity) => {
                 match result {
                     Ok(config) => {
                         tracing::info!("DebugResolver finished running.");
@@ -80,9 +84,11 @@ impl DebugResolver {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn main(&mut self, capacity: u64) -> Result<DebugClientConfig, TError> {
+    async fn run(&mut self, capacity: u64) -> Result<DebugClientConfig, TError> {
         let debug_session_id = self.create_debug_session(capacity).await?;
+        eprintln!("Waiting for available runner...");
         let config = self.resolve_debug_client_config(debug_session_id).await?;
+        eprintln!("Runner found.");
         Ok(config)
     }
 

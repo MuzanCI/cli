@@ -1,6 +1,9 @@
 use crossterm::terminal;
 use russh::client::Handle;
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use crate::stdin::StdinStream;
 
@@ -18,11 +21,14 @@ impl russh::client::Handler for ClientHandler {
 }
 
 pub async fn run_exec_shell(
+    signal_receiver_enabled: Arc<AtomicBool>,
     cmd: &str,
     session: &mut Handle<ClientHandler>,
 ) -> Result<u32, Box<dyn std::error::Error>> {
     let mut channel = session.channel_open_session().await?;
     channel.exec(true, cmd).await?;
+
+    signal_receiver_enabled.store(false, Ordering::Relaxed);
 
     let mut exit_code: u32 = 0;
 
@@ -37,11 +43,13 @@ pub async fn run_exec_shell(
             msg_opt = channel.wait() => {
                 match msg_opt {
                     Some(russh::ChannelMsg::Data { ref data }) => {
+                        tracing::warn!("[debug_client < debugger . stdout_process] n={}", data.len());
                         let mut out = std::io::stdout();
                         out.write_all(data)?;
                         out.flush()?;
                     }
                     Some(russh::ChannelMsg::ExtendedData { ref data, .. }) => {
+                        tracing::warn!("[debug_client < debugger . stderr_process] n={}", data.len());
                         let mut out = std::io::stderr();
                         out.write_all(data)?;
                         out.flush()?;
@@ -58,10 +66,13 @@ pub async fn run_exec_shell(
         }
     }
 
+    signal_receiver_enabled.store(true, Ordering::Relaxed);
+
     Ok(exit_code)
 }
 
 pub async fn run_interactive_shell(
+    signal_receiver_enabled: Arc<AtomicBool>,
     stdin: &mut StdinStream,
     session: &mut Handle<ClientHandler>,
 ) -> Result<u32, Box<dyn std::error::Error>> {
@@ -72,6 +83,8 @@ pub async fn run_interactive_shell(
         .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await?;
     channel.request_shell(true).await?;
+
+    signal_receiver_enabled.store(false, Ordering::Relaxed);
 
     terminal::enable_raw_mode()?;
 
@@ -115,6 +128,8 @@ pub async fn run_interactive_shell(
     }
 
     let _ = terminal::disable_raw_mode();
+
+    signal_receiver_enabled.store(true, Ordering::Relaxed);
 
     Ok(exit_code)
 }

@@ -6,6 +6,5 @@ async fn main() {
     let command = CliCommand::parse();
     if let Err(err) = command.run().await {
         eprintln!("error: {err:#}");
-        std::process::exit(1);
     }
 }
